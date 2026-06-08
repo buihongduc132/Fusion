@@ -1673,13 +1673,26 @@ export class Database {
       // when a writer crashed. journal_size_limit below still caps WAL growth.
       this.db.exec("PRAGMA wal_autocheckpoint = 1000");
       // Bound WAL growth between checkpoints/maintenance cycles.
-      this.db.exec("PRAGMA journal_size_limit = 4194304");
+      // Bound WAL growth between checkpoints/maintenance cycles.
+      // 16 MB: reduces checkpoint frequency for write-heavy workloads while
+      // still capping disk usage. 4 MB was too aggressive with 88+ projects.
+      this.db.exec("PRAGMA journal_size_limit = 16777216");
     } else {
       // Wait up to the configured timeout for locks to clear before returning SQLITE_BUSY.
       this.db.exec(`PRAGMA busy_timeout = ${this.busyTimeoutMs}`);
     }
     // Enable foreign key enforcement
     this.db.exec("PRAGMA foreign_keys = ON");
+
+    // In-memory page cache. Default is 2000 pages (8 MB).
+    // 80 MB keeps hot task data in memory — critical for listTasks() polling.
+    // Negative value = KiB. Only applies to file-backed DBs.
+    if (!inMemory) {
+      this.db.exec("PRAGMA cache_size = -20000");
+      // Temp tables/indexes in RAM instead of disk. Safe — temp data is
+      // ephemeral and lost on process restart regardless.
+      this.db.exec("PRAGMA temp_store = MEMORY");
+    }
 
     this._fts5Available = probeFts5(this.db);
   }
