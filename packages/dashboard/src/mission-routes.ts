@@ -81,9 +81,9 @@ function validateFeatureId(id: string): boolean {
 }
 
 function validateAssertionId(id: string): boolean {
-  // Assertion IDs follow format: CA-{base36timestamp}-{random}
-  // e.g., CA-A3B7CD-E9F2
-  return /^CA-[A-Z0-9]+-[A-Z0-9]+$/i.test(id);
+  // Accept generated format: CA-{base36timestamp}-{sequence}-{random}
+  // e.g., CA-A3B7CD-000J-E9F2
+  return /^CA-[A-Z0-9]+(?:-[A-Z0-9]+)*$/i.test(id);
 }
 
 function validateGoalId(id: string): boolean {

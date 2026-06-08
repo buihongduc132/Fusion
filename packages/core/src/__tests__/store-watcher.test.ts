@@ -148,7 +148,7 @@ describe("TaskStore", () => {
 
         await vi.advanceTimersByTimeAsync(1);
         await harness.store().createTask({ description: "watcher polling fallback" });
-        await vi.advanceTimersByTimeAsync(1000);
+        await vi.advanceTimersByTimeAsync(5000);
         await expect(storeAny.checkForChanges()).resolves.toBeUndefined();
       } finally {
         harness.store().stopWatching();
@@ -169,7 +169,7 @@ describe("TaskStore", () => {
       try {
         await vi.advanceTimersByTimeAsync(1);
         await harness.store().createTask({ description: "fast poll test" });
-        await vi.advanceTimersByTimeAsync(1000);
+        await vi.advanceTimersByTimeAsync(5000);
         await storeAny.checkForChanges();
 
         const timingWarningEmitted = warnSpy.mock.calls.some(

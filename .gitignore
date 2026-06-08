@@ -92,3 +92,13 @@ packages/dashboard/android/
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+
+# Local Pi runtime state
+.atl/
+
+# Mutation testing artifacts
+.mutator-rules/
+reports/
+
+# Editor-specific config (duplicate of AGENTS.md GitNexus section)
+CLAUDE.md

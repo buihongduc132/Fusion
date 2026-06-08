@@ -4089,7 +4089,12 @@ export class Database {
     if (version < 85) {
       this.applyMigration(85, () => {
         if (!this.hasColumn("tasks", "title")) {
-          console.log("[title-id-drift] db.ts migration normalized 0 active titles");
+          return;
+        }
+
+        // Fast exit: skip expensive scan when there are no tasks.
+        const countRow = this.db.prepare("SELECT COUNT(*) AS cnt FROM tasks WHERE title IS NOT NULL").get() as { cnt: number };
+        if (countRow.cnt === 0) {
           return;
         }
 
@@ -4112,7 +4117,9 @@ export class Database {
           normalizedCount += 1;
         }
 
-        console.log(`[title-id-drift] db.ts migration normalized ${normalizedCount} active titles`);
+        if (normalizedCount > 0) {
+          console.log(`[title-id-drift] db.ts migration normalized ${normalizedCount} active titles`);
+        }
       });
     }
 

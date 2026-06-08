@@ -82,13 +82,19 @@ export class ArchiveDatabase {
     return this._fts5Available;
   }
 
+  /** Guard: only run normalizeDriftedTitlesOnce once per instance. */
+  private _titlesNormalized = false;
+
   init(): void {
     this.db.exec(BASE_SCHEMA_SQL);
     if (this._fts5Available) {
       this.db.exec(FTS5_SCHEMA_SQL);
     }
     this.addColumnIfMissing("archived_tasks", "prompt", "TEXT");
-    this.normalizeDriftedTitlesOnce();
+    if (!this._titlesNormalized) {
+      this._titlesNormalized = true;
+      this.normalizeDriftedTitlesOnce();
+    }
   }
 
   upsert(entry: ArchivedTaskEntry): void {
@@ -274,6 +280,13 @@ export class ArchiveDatabase {
   }
 
   private normalizeDriftedTitlesOnce(): void {
+    // Fast exit: skip expensive LIKE scan when the table is empty.
+    // Most projects have zero archived tasks at startup.
+    const countRow = this.db.prepare("SELECT COUNT(*) AS cnt FROM archived_tasks").get() as { cnt: number };
+    if (countRow.cnt === 0) {
+      return;
+    }
+
     const rows = this.db.prepare(`
       SELECT id, title, taskJson
       FROM archived_tasks
@@ -302,7 +315,9 @@ export class ArchiveDatabase {
       normalizedCount += 1;
     }
 
-    console.log(`[title-id-drift] archive-db normalized ${normalizedCount} archived titles`);
+    if (normalizedCount > 0) {
+      console.log(`[title-id-drift] archive-db normalized ${normalizedCount} archived titles`);
+    }
   }
 
   close(): void {

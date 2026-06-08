@@ -10952,10 +10952,12 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
       });
     }
 
-    // Poll for changes every second
+    // Poll for changes every 5 seconds. 1s is too aggressive for deployments
+    // with many registered projects — 137 projects × 1 poll/sec = 137 SQLite
+    // queries/sec sustained, pegging CPU at 40%+. 5s reduces this to ~28/sec.
     this.pollInterval = setInterval(() => {
       void this.checkForChanges();
-    }, 1000);
+    }, 5_000);
     this.clearStartupSlimListMemo();
   }
 
