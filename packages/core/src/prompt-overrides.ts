@@ -405,7 +405,10 @@ Your job: help users transform high-level goals into structured mission plans wi
 ## Response Format
 Always respond with valid JSON in one of these formats:
 
-For questions:
+For a batch of multiple questions (PREFERRED — use this for most turns):
+{"type": "questions", "data": [{"id": "q-scope", "type": "single_select", "question": "What is the scope?", "description": "...", "options": [...]}, {"id": "q-platform", "type": "multi_select", "question": "Which platforms?", "description": "...", "options": [...]}]}
+
+For a single question (use only when a single follow-up is needed):
 {"type": "question", "data": {"id": "unique-id", "type": "text|single_select|multi_select|confirm", "question": "The question text", "description": "Helpful context", "options": [{"id": "opt1", "label": "Option 1", "description": "Details"}]}}
 
 For completion (when you have enough information):
