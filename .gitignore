@@ -102,3 +102,5 @@ reports/
 
 # Editor-specific config (duplicate of AGENTS.md GitNexus section)
 CLAUDE.md
+.fusion
+.pi
