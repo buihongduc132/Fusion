@@ -38,6 +38,7 @@ const {
   mockGetProjectNodePathMapping,
   mockUpsertProjectNodePathMapping,
   mockRemoveProjectNodePathMapping,
+  mockListAllHealth,
 } = vi.hoisted(() => ({
   mockFsAccess: vi.fn().mockResolvedValue(undefined),
   mockFsStat: vi.fn().mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" })),
@@ -114,6 +115,7 @@ const {
   mockGetProjectNodePathMapping: vi.fn().mockResolvedValue(undefined),
   mockUpsertProjectNodePathMapping: vi.fn(),
   mockRemoveProjectNodePathMapping: vi.fn().mockResolvedValue(undefined),
+  mockListAllHealth: vi.fn().mockResolvedValue([]),
 }));
 
 // Mock node:fs for route handler tests that check path existence
@@ -146,7 +148,7 @@ vi.mock("@fusion/core", async () => {
   const actual = await vi.importActual<typeof import("@fusion/core")>("@fusion/core");
   return {
     ...actual,
-    CentralCore: vi.fn().mockImplementation(function () { return {
+    CentralCore: vi.fn().mockImplementation(() => ({
       init: mockInit,
       close: mockClose,
       listProjects: mockListProjects,
@@ -166,7 +168,8 @@ vi.mock("@fusion/core", async () => {
       getProjectNodePathMapping: mockGetProjectNodePathMapping,
       upsertProjectNodePathMapping: mockUpsertProjectNodePathMapping,
       removeProjectNodePathMapping: mockRemoveProjectNodePathMapping,
-    }; }),
+      listAllHealth: mockListAllHealth,
+})),
     ensureMemoryFileWithBackend: mockEnsureMemoryFileWithBackend,
     readProjectIdentity: mockReadProjectIdentity,
     writeProjectIdentity: mockWriteProjectIdentity,
@@ -1489,5 +1492,438 @@ describe("GET /api/projects/:id/health route handler", () => {
     
     // Verify that listTasks was called with { slim: true }
     expect(mockStore.listTasks).toHaveBeenCalledWith({ slim: true });
+  });
+});
+
+// ── GET /api/projects/health Batch Endpoint Tests ──────────────────────────────
+// Batch health endpoint that returns health metrics for all projects in one response.
+
+describe("GET /api/projects/health batch endpoint", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetOrCreateProjectStore.mockReset();
+    mockGetOrCreateProjectStore.mockImplementation(async () => new MockStoreForRoutes());
+  });
+
+  // Helper to create a mock store with specific tasks
+  function createMockStoreWithTasks(tasks: Array<{ id: string; column: string }>): MockStoreForRoutes & { listTasks: ReturnType<typeof vi.fn> } {
+    const mockStore = new MockStoreForRoutes() as MockStoreForRoutes & { listTasks: ReturnType<typeof vi.fn> };
+    mockStore.listTasks = vi.fn().mockResolvedValue(tasks);
+    return mockStore;
+  }
+
+  it("returns health map for multiple projects", async () => {
+    const projectA = {
+      id: "proj_a",
+      name: "Project A",
+      path: "/projects/a",
+      status: "active",
+      isolationMode: "in-process" as const,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const projectB = {
+      id: "proj_b",
+      name: "Project B",
+      path: "/projects/b",
+      status: "active",
+      isolationMode: "in-process" as const,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const projectC = {
+      id: "proj_c",
+      name: "Project C",
+      path: "/projects/c",
+      status: "paused",
+      isolationMode: "in-process" as const,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    mockListProjects.mockResolvedValue([projectA, projectB, projectC]);
+
+    mockListAllHealth.mockResolvedValue([
+      {
+        projectId: "proj_a",
+        status: "active",
+        activeTaskCount: 0,
+        inFlightAgentCount: 0,
+        totalTasksCompleted: 0,
+        totalTasksFailed: 0,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        projectId: "proj_b",
+        status: "active",
+        activeTaskCount: 0,
+        inFlightAgentCount: 0,
+        totalTasksCompleted: 0,
+        totalTasksFailed: 0,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        projectId: "proj_c",
+        status: "paused",
+        activeTaskCount: 0,
+        inFlightAgentCount: 0,
+        totalTasksCompleted: 0,
+        totalTasksFailed: 0,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+
+    const storeA = createMockStoreWithTasks([
+      { id: "FN-1", column: "triage" },
+      { id: "FN-2", column: "todo" },
+      { id: "FN-3", column: "in-progress" },
+      { id: "FN-4", column: "in-review" },
+      { id: "FN-5", column: "done" },
+      { id: "FN-6", column: "archived" },
+    ]);
+    const storeB = createMockStoreWithTasks([
+      { id: "FN-10", column: "todo" },
+      { id: "FN-11", column: "todo" },
+      { id: "FN-12", column: "in-progress" },
+      { id: "FN-13", column: "in-review" },
+      { id: "FN-14", column: "archived" },
+    ]);
+    const storeC = createMockStoreWithTasks([
+      { id: "FN-20", column: "done" },
+      { id: "FN-21", column: "done" },
+      { id: "FN-22", column: "archived" },
+    ]);
+
+    mockGetOrCreateProjectStore.mockImplementation(async (projectId: string) => {
+      if (projectId === "proj_a") return storeA;
+      if (projectId === "proj_b") return storeB;
+      if (projectId === "proj_c") return storeC;
+      return new MockStoreForRoutes();
+    });
+
+    const defaultStore = new MockStoreForRoutes();
+    const app = await createApp(defaultStore);
+
+    const res = await request(app, "GET", "/api/projects/health");
+
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, Record<string, unknown>>;
+
+    // proj_a: triage + todo + in-progress + in-review = 4 active, 1 in-flight, done + archived = 2 completed
+    expect(body.proj_a).toBeDefined();
+    expect(body.proj_a.activeTaskCount).toBe(4);
+    expect(body.proj_a.inFlightAgentCount).toBe(1);
+    expect(body.proj_a.totalTasksCompleted).toBe(2);
+    expect(body.proj_a.status).toBe("active");
+
+    // proj_b: 2 todo + 1 in-progress + 1 in-review = 4 active, 1 in-flight, 1 archived = 1 completed
+    expect(body.proj_b).toBeDefined();
+    expect(body.proj_b.activeTaskCount).toBe(4);
+    expect(body.proj_b.inFlightAgentCount).toBe(1);
+    expect(body.proj_b.totalTasksCompleted).toBe(1);
+
+    // proj_c: 0 active, 0 in-flight, 2 done + 1 archived = 3 completed
+    expect(body.proj_c).toBeDefined();
+    expect(body.proj_c.activeTaskCount).toBe(0);
+    expect(body.proj_c.inFlightAgentCount).toBe(0);
+    expect(body.proj_c.totalTasksCompleted).toBe(3);
+    expect(body.proj_c.status).toBe("paused");
+  });
+
+  it("returns empty object when no projects registered", async () => {
+    mockListProjects.mockResolvedValue([]);
+    mockListAllHealth.mockResolvedValue([]);
+
+    const defaultStore = new MockStoreForRoutes();
+    const app = await createApp(defaultStore);
+
+    const res = await request(app, "GET", "/api/projects/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({});
+  });
+
+  it("gracefully degrades when one project's store fails", async () => {
+    const projectA = {
+      id: "proj_a",
+      name: "Project A",
+      path: "/projects/a",
+      status: "active",
+      isolationMode: "in-process" as const,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const projectB = {
+      id: "proj_b",
+      name: "Project B (failing)",
+      path: "/projects/b",
+      status: "active",
+      isolationMode: "in-process" as const,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    mockListProjects.mockResolvedValue([projectA, projectB]);
+
+    mockListAllHealth.mockResolvedValue([
+      {
+        projectId: "proj_a",
+        status: "active",
+        activeTaskCount: 0,
+        inFlightAgentCount: 0,
+        totalTasksCompleted: 0,
+        totalTasksFailed: 0,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        projectId: "proj_b",
+        status: "active",
+        activeTaskCount: 5,
+        inFlightAgentCount: 2,
+        totalTasksCompleted: 10,
+        totalTasksFailed: 1,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+
+    const storeA = createMockStoreWithTasks([
+      { id: "FN-1", column: "todo" },
+      { id: "FN-2", column: "in-progress" },
+    ]);
+
+    mockGetOrCreateProjectStore.mockImplementation(async (projectId: string) => {
+      if (projectId === "proj_a") return storeA;
+      if (projectId === "proj_b") throw new Error("Store unavailable");
+      return new MockStoreForRoutes();
+    });
+
+    const defaultStore = new MockStoreForRoutes();
+    const app = await createApp(defaultStore);
+
+    const res = await request(app, "GET", "/api/projects/health");
+
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, Record<string, unknown>>;
+
+    // proj_a should have full live data
+    expect(body.proj_a).toBeDefined();
+    expect(body.proj_a.activeTaskCount).toBe(2); // todo + in-progress
+    expect(body.proj_a.inFlightAgentCount).toBe(1); // in-progress
+    expect(body.proj_a.totalTasksCompleted).toBe(0);
+
+    // proj_b should fall back to central health data without live counts
+    expect(body.proj_b).toBeDefined();
+    expect(body.proj_b.activeTaskCount).toBe(5); // from central health
+    expect(body.proj_b.inFlightAgentCount).toBe(2); // from central health
+    expect(body.proj_b.totalTasksCompleted).toBe(10); // from central health
+    expect(body.proj_b.totalTasksFailed).toBe(1); // from central health
+  });
+
+  it("live counts override stale central counts", async () => {
+    const projectA = {
+      id: "proj_a",
+      name: "Project A",
+      path: "/projects/a",
+      status: "active",
+      isolationMode: "in-process" as const,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    mockListProjects.mockResolvedValue([projectA]);
+
+    // Central health has stale values
+    mockListAllHealth.mockResolvedValue([
+      {
+        projectId: "proj_a",
+        status: "active",
+        activeTaskCount: 999,
+        inFlightAgentCount: 999,
+        totalTasksCompleted: 999,
+        totalTasksFailed: 0,
+        updatedAt: "2020-01-01T00:00:00.000Z",
+      },
+    ]);
+
+    const storeA = createMockStoreWithTasks([
+      { id: "FN-1", column: "triage" },
+      { id: "FN-2", column: "done" },
+    ]);
+    mockGetOrCreateProjectStore.mockResolvedValue(storeA);
+
+    const defaultStore = new MockStoreForRoutes();
+    const app = await createApp(defaultStore);
+
+    const res = await request(app, "GET", "/api/projects/health");
+
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, Record<string, unknown>>;
+
+    // Live counts should override stale central counts
+    expect(body.proj_a.activeTaskCount).toBe(1); // triage only, NOT 999
+    expect(body.proj_a.inFlightAgentCount).toBe(0); // NOT 999
+    expect(body.proj_a.totalTasksCompleted).toBe(1); // done, NOT 999
+  });
+
+  it("does not interfere with existing GET /api/projects/:id/health", async () => {
+    // Setup: Two projects with distinct task distributions
+    const projectA = {
+      id: "proj_a",
+      name: "Project A",
+      path: "/projects/a",
+      status: "active",
+      isolationMode: "in-process" as const,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const projectB = {
+      id: "proj_b",
+      name: "Project B",
+      path: "/projects/b",
+      status: "active",
+      isolationMode: "in-process" as const,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    mockListProjects.mockResolvedValue([projectA, projectB]);
+    mockListAllHealth.mockResolvedValue([
+      {
+        projectId: "proj_a",
+        status: "active",
+        activeTaskCount: 0,
+        inFlightAgentCount: 0,
+        totalTasksCompleted: 0,
+        totalTasksFailed: 0,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        projectId: "proj_b",
+        status: "active",
+        activeTaskCount: 0,
+        inFlightAgentCount: 0,
+        totalTasksCompleted: 0,
+        totalTasksFailed: 0,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+
+    const storeA = createMockStoreWithTasks([{ id: "FN-1", column: "todo" }]);
+    const storeB = createMockStoreWithTasks([{ id: "FN-10", column: "in-progress" }]);
+
+    mockGetOrCreateProjectStore.mockImplementation(async (projectId: string) => {
+      if (projectId === "proj_a") return storeA;
+      if (projectId === "proj_b") return storeB;
+      return new MockStoreForRoutes();
+    });
+
+    // Setup for individual endpoint
+    mockGetProject.mockImplementation(async (id: string) => {
+      if (id === "proj_a") return projectA;
+      if (id === "proj_b") return projectB;
+      return null;
+    });
+    mockGetProjectHealth.mockResolvedValue({
+      projectId: "proj_a",
+      status: "active",
+      activeTaskCount: 100,
+      inFlightAgentCount: 50,
+      totalTasksCompleted: 25,
+      totalTasksFailed: 0,
+      updatedAt: "2020-01-01T00:00:00.000Z",
+    });
+
+    const defaultStore = new MockStoreForRoutes();
+    const app = await createApp(defaultStore);
+
+    // Call batch endpoint
+    const batchRes = await request(app, "GET", "/api/projects/health");
+    expect(batchRes.status).toBe(200);
+    const batchBody = batchRes.body as Record<string, Record<string, unknown>>;
+    expect(Object.keys(batchBody).sort()).toEqual(["proj_a", "proj_b"]);
+
+    // Call individual endpoint
+    const individualRes = await request(app, "GET", "/api/projects/proj_a/health");
+    expect(individualRes.status).toBe(200);
+    const individualBody = individualRes.body as Record<string, unknown>;
+    expect(individualBody.projectId).toBe("proj_a");
+    expect(individualBody.activeTaskCount).toBe(1); // todo
+
+    // Batch endpoint should also return same live count for proj_a
+    expect(batchBody.proj_a.activeTaskCount).toBe(1);
+  });
+
+  it("gracefully degrades when listTasks throws for one project", async () => {
+    const projectA = {
+      id: "proj_a",
+      name: "Project A",
+      path: "/projects/a",
+      status: "active",
+      isolationMode: "in-process" as const,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const projectB = {
+      id: "proj_b",
+      name: "Project B",
+      path: "/projects/b",
+      status: "active",
+      isolationMode: "in-process" as const,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    mockListProjects.mockResolvedValue([projectA, projectB]);
+
+    mockListAllHealth.mockResolvedValue([
+      {
+        projectId: "proj_a",
+        status: "active",
+        activeTaskCount: 0,
+        inFlightAgentCount: 0,
+        totalTasksCompleted: 0,
+        totalTasksFailed: 0,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        projectId: "proj_b",
+        status: "active",
+        activeTaskCount: 3,
+        inFlightAgentCount: 1,
+        totalTasksCompleted: 5,
+        totalTasksFailed: 0,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+
+    // Store A works fine
+    const storeA = createMockStoreWithTasks([{ id: "FN-1", column: "todo" }]);
+    // Store B's listTasks throws
+    const storeB = createMockStoreWithTasks([]);
+    storeB.listTasks = vi.fn().mockRejectedValue(new Error("DB locked"));
+
+    mockGetOrCreateProjectStore.mockImplementation(async (projectId: string) => {
+      if (projectId === "proj_a") return storeA;
+      if (projectId === "proj_b") return storeB;
+      return new MockStoreForRoutes();
+    });
+
+    const defaultStore = new MockStoreForRoutes();
+    const app = await createApp(defaultStore);
+
+    const res = await request(app, "GET", "/api/projects/health");
+
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, Record<string, unknown>>;
+
+    // proj_a: live data works
+    expect(body.proj_a.activeTaskCount).toBe(1);
+    expect(body.proj_a.inFlightAgentCount).toBe(0);
+    expect(body.proj_a.totalTasksCompleted).toBe(0);
+
+    // proj_b: falls back to central health
+    expect(body.proj_b.activeTaskCount).toBe(3);
+    expect(body.proj_b.inFlightAgentCount).toBe(1);
+    expect(body.proj_b.totalTasksCompleted).toBe(5);
   });
 });

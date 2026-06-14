@@ -265,7 +265,8 @@ export function fetchTasks(
   if (q) search.set("q", q);
   if (includeArchived) search.set("includeArchived", "1");
   const suffix = search.size > 0 ? `?${search.toString()}` : "";
-  return api<Task[]>(`/tasks${suffix}`);
+  const path = `/tasks${suffix}`;
+  return dedupe(path, () => api<Task[]>(path));
 }
 
 export async function fetchTaskDetail(id: string, projectId?: string): Promise<TaskDetail> {
@@ -1594,7 +1595,7 @@ export interface ProviderUsage {
 
 /** Fetch usage data from all configured AI providers */
 export function fetchUsageData(): Promise<{ providers: ProviderUsage[] }> {
-  return api<{ providers: ProviderUsage[] }>("/usage");
+  return dedupe("/usage", () => api<{ providers: ProviderUsage[] }>("/usage"));
 }
 
 // --- Auth API ---
@@ -3168,7 +3169,8 @@ export interface WorkspaceListResponse {
 
 /** Fetch available file browser workspaces. */
 export function fetchWorkspaces(projectId?: string): Promise<WorkspaceListResponse> {
-  return api<WorkspaceListResponse>(withProjectId("/workspaces", projectId));
+  const path = withProjectId("/workspaces", projectId);
+  return dedupe(path, () => api<WorkspaceListResponse>(path));
 }
 
 /** List files in a workspace (project root or task worktree). */
@@ -5009,7 +5011,8 @@ export function fetchActivityLog(options?: { limit?: number; since?: string; typ
   if (options?.type !== undefined) search.set("type", options.type);
   if (options?.projectId) search.set("projectId", options.projectId);
   const suffix = search.size > 0 ? `?${search.toString()}` : "";
-  return api<ActivityLogEntry[]>(`/activity${suffix}`);
+  const path = `/activity${suffix}`;
+  return dedupe(path, () => api<ActivityLogEntry[]>(path));
 }
 
 /** Clear all activity log entries */
@@ -5738,7 +5741,8 @@ export function fetchAgents(
 
 /** Fetch a single agent with heartbeat history */
 export function fetchAgent(agentId: string, projectId?: string): Promise<AgentDetail> {
-  return api<AgentDetail>(withProjectId(`/agents/${encodeURIComponent(agentId)}`, projectId));
+  const path = withProjectId(`/agents/${encodeURIComponent(agentId)}`, projectId);
+  return dedupe(path, () => api<AgentDetail>(path));
 }
 
 /** Create a new agent */
@@ -6787,7 +6791,7 @@ export interface CompleteSetupResult {
 
 /** Fetch all registered projects */
 export function fetchProjects(): Promise<ProjectInfo[]> {
-  return api<ProjectInfo[]>("/projects");
+  return dedupe("/projects", () => api<ProjectInfo[]>("/projects"));
 }
 
 /** Dashboard-facing mapping contract for project availability on nodes. */
@@ -6836,7 +6840,7 @@ export function listManagedDockerNodes(): Promise<DockerNodeInfo[]> {
 }
 
 export function fetchManagedDockerNodes(): Promise<ManagedDockerNodeInfo[]> {
-  return api<ManagedDockerNodeInfo[]>("/docker/nodes");
+  return dedupe("/docker/nodes", () => api<ManagedDockerNodeInfo[]>("/docker/nodes"));
 }
 
 export function fetchManagedDockerNode(id: string): Promise<ManagedDockerNodeInfo> {
@@ -6997,7 +7001,7 @@ export async function fetchNodeMetrics(id: string): Promise<SystemMetrics | null
 
 /** Fetch full mesh topology state (all nodes with their metrics and known peers) */
 export async function fetchMeshState(): Promise<MeshClusterSnapshot> {
-  return api<MeshClusterSnapshot>("/mesh/state");
+  return dedupe("/mesh/state", () => api<MeshClusterSnapshot>("/mesh/state"));
 }
 
 /** Browse directory entries for the directory picker */
@@ -7173,7 +7177,8 @@ export function fetchActivityFeed(options?: FeedOptions): Promise<ActivityFeedEn
   if (options?.type) params.set("type", options.type);
   
   const query = params.size > 0 ? `?${params.toString()}` : "";
-  return api<ActivityFeedEntry[]>(`/activity-feed${query}`);
+  const path = `/activity-feed${query}`;
+  return dedupe(path, () => api<ActivityFeedEntry[]>(path));
 }
 
 /** Pause a project */
@@ -10330,15 +10335,18 @@ export function listEvals(options: EvalsListOptions = {}, projectId?: string): P
   if (options.limit !== undefined) params.set("limit", String(options.limit));
   if (options.offset !== undefined) params.set("offset", String(options.offset));
   const suffix = params.size > 0 ? `?${params.toString()}` : "";
-  return api<{ results: EvalTaskResult[]; count: number }>(withProjectId(`/evals${suffix}`, projectId));
+  const path = withProjectId(`/evals${suffix}`, projectId);
+  return dedupe(path, () => api<{ results: EvalTaskResult[]; count: number }>(path));
 }
 
 export function getEval(id: string, projectId?: string): Promise<{ result: EvalTaskResult }> {
-  return api<{ result: EvalTaskResult }>(withProjectId(`/evals/${encodeURIComponent(id)}`, projectId));
+  const path = withProjectId(`/evals/${encodeURIComponent(id)}`, projectId);
+  return dedupe(path, () => api<{ result: EvalTaskResult }>(path));
 }
 
 export function listEvalRuns(projectId?: string): Promise<{ runs: EvalRun[] }> {
-  return api<{ runs: EvalRun[] }>(withProjectId("/evals/runs", projectId));
+  const path = withProjectId("/evals/runs", projectId);
+  return dedupe(path, () => api<{ runs: EvalRun[] }>(path));
 }
 
 export interface CreateResearchRunInput {

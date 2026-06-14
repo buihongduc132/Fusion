@@ -26,6 +26,7 @@ The context provides core cross-cutting plumbing:
 
 - `register-settings-memory-routes.ts` — settings APIs and memory backend/file/insight routes (excluding node-to-node sync endpoints)
 - `register-project-routes.ts` — `/projects` CRUD + `/projects/across-nodes`, `/projects/detect`, health/config/pause/resume routes
+  - `GET /projects/health` — batch health endpoint returning `{ [projectId: string]: ProjectHealth }` for all registered projects (registered before `/projects/:id/health` to avoid `:id = "health"` shadowing)
 - `register-node-routes.ts` — `/nodes` CRUD + operational endpoints (`/health-check`, `/metrics`, `/version`, `/sync-plugins`, `/compatibility`)
 - `register-settings-sync-routes.ts` — node settings/auth sync routes (`/nodes/:id/settings*`, `/nodes/:id/auth/sync`)
 - `register-mesh-routes.ts` — mesh topology routes (`/mesh/state`, `/mesh/sync`)

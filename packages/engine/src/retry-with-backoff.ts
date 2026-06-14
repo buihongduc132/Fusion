@@ -250,7 +250,9 @@ export async function withRetry<T>(
     isRetryable: customIsRetryable,
   } = options;
 
+  const _startTime = Date.now();
   let lastError: EngineError | undefined;
+  let _retryCount = 0;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     // Check abort before each attempt
@@ -302,6 +304,8 @@ export async function withRetry<T>(
 
       // Sleep with cancellation support
       await cancellableSleep(delay, signal);
+
+      _retryCount++;
     }
   }
 

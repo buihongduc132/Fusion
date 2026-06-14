@@ -16,7 +16,7 @@ type OpenListener = () => void;
 
 const HEARTBEAT_TIMEOUT_MS = 45_000;
 const RECONNECT_DELAY_MS = 3_000;
-const CLIENT_KEEPALIVE_INTERVAL_MS = 2_000;
+const CLIENT_KEEPALIVE_INTERVAL_MS = 15_000;
 const CLIENT_KEEPALIVE_TIMEOUT_MS = 1_500;
 const VISIBILITY_REOPEN_DEDUPE_MS = 1_000;
 const CLIENT_ID_STORAGE_KEY = "fusion:sse-client-id";
@@ -232,6 +232,19 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   };
 
   const reopenVisibleChannels = () => {
+    // Phase 1: When tab becomes hidden, stop keepalive timers to avoid
+    // wasting network on background tabs. The server-side heartbeat timeout
+    // (45s) is long enough that a 15s keepalive pause is safe.
+    if (document.visibilityState === "hidden") {
+      for (const channel of channels.values()) {
+        if (channel.keepaliveTimer !== null) {
+          stopClientKeepalive(channel);
+        }
+      }
+      return;
+    }
+
+    // Phase 2: When tab becomes visible, reopen channels and restart keepalives.
     if (document.visibilityState !== "visible") return;
     const now = Date.now();
     if (now - lastVisibilityReopenAt < VISIBILITY_REOPEN_DEDUPE_MS) return;
@@ -263,6 +276,18 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
           forceReconnect(channel, "external");
         }
       });
+    }
+
+    // Restart keepalive timers for active channels whose timers were stopped
+    // during the hidden phase.
+    for (const channel of channels.values()) {
+      if (
+        channel.keepaliveTimer === null &&
+        channel.es !== null &&
+        !channel.closed
+      ) {
+        startClientKeepalive(channel);
+      }
     }
   };
 

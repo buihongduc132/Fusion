@@ -7,7 +7,7 @@ import {
   readProjectIdentity,
   writeProjectIdentity,
 } from "@fusion/core";
-import type { CentralCore as CentralCoreApi } from "@fusion/core";
+import type { CentralCore as CentralCoreApi, ProjectHealth } from "@fusion/core";
 import { ApiError, badRequest, notFound } from "../api-error.js";
 import { execFileAsync } from "../exec-file.js";
 import { getOrCreateProjectStore } from "../project-store-resolver.js";
@@ -202,6 +202,86 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
       const prioritizedProjects = prioritizeProjectsForCurrentDirectory(mergedProjects);
 
       res.json(prioritizedProjects);
+    } catch (err: unknown) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err);
+    }
+  });
+
+  /**
+   * GET /api/projects/health
+   * Batch health endpoint — returns health metrics for ALL registered projects
+   * in a single response.  Keyed by projectId.
+   *
+   * Registered BEFORE /projects/:id so that Express does not interpret
+   * "health" as a project ID.
+   *
+   * Returns: { [projectId: string]: ProjectHealth }
+   */
+  router.get("/projects/health", async (_req, res) => {
+    try {
+      const result = await withCentralCore(async (central) => {
+        const [projects, allCentralHealth] = await Promise.all([
+          central.listProjects(),
+          central.listAllHealth(),
+        ]);
+
+        // Build a fast lookup from central health data
+        const centralHealthMap = new Map(
+          allCentralHealth.map((h) => [h.projectId, h]),
+        );
+
+        const healthMap: Record<string, ProjectHealth> = {};
+
+        // Active columns — must match the individual health endpoint
+        const activeCols = new Set(["triage", "todo", "in-progress", "in-review"]);
+
+        for (const project of projects) {
+          const centralHealth = centralHealthMap.get(project.id);
+
+          // Build base: use central health if available, otherwise synthesize
+          const healthBase: ProjectHealth = centralHealth ?? {
+            projectId: project.id,
+            status: project.status ?? "active",
+            activeTaskCount: 0,
+            inFlightAgentCount: 0,
+            totalTasksCompleted: 0,
+            totalTasksFailed: 0,
+            updatedAt: new Date().toISOString(),
+          };
+
+          try {
+            const projectStore = await getOrCreateProjectStore(project.id);
+            const tasks = await projectStore.listTasks({ slim: true });
+
+            const activeTaskCount = tasks.filter((t) => activeCols.has(t.column)).length;
+            const inFlightAgentCount = tasks.filter((t) => t.column === "in-progress").length;
+            const totalTasksCompleted = tasks.filter(
+              (t) => t.column === "done" || t.column === "archived",
+            ).length;
+
+            healthMap[project.id] = {
+              ...healthBase,
+              activeTaskCount,
+              inFlightAgentCount,
+              totalTasksCompleted,
+            };
+          } catch (storeErr: unknown) {
+            // Graceful degradation: keep central health data for this project
+            // without live task counts rather than failing the entire batch.
+            runtimeLogger.child("projects:health-batch").warn(
+              `Failed to compute live counts for project ${project.id}: ${storeErr instanceof Error ? storeErr.message : String(storeErr)}`,
+            );
+            healthMap[project.id] = healthBase;
+          }
+        }
+
+        return healthMap;
+      });
+
+      res.json(result);
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
