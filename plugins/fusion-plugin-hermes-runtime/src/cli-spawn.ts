@@ -15,6 +15,48 @@ import { spawn, spawnSync } from "node:child_process";
 import os from "node:os";
 import path, { sep as PATH_SEP } from "node:path";
 
+// ── Structured error types ─────────────────────────────────────────────────
+
+/** Discriminator for the category of Hermes CLI failure. */
+export type HermesCliErrorKind =
+  | "binary-not-found"
+  | "auth-failed"
+  | "timeout"
+  | "unknown";
+
+/**
+ * Structured error emitted by `invokeHermesCli` when the subprocess fails.
+ * Consumers can inspect `kind` for tailored error messages and `cause` for
+ * the raw stderr/stdout details.
+ */
+export class HermesCliError extends Error {
+  readonly kind: HermesCliErrorKind;
+  readonly exitCode: number | null;
+  readonly stderr: string;
+
+  constructor(opts: {
+    kind: HermesCliErrorKind;
+    exitCode: number | null;
+    stderr: string;
+    message: string;
+  }) {
+    super(opts.message);
+    this.name = "HermesCliError";
+    this.kind = opts.kind;
+    this.exitCode = opts.exitCode;
+    this.stderr = opts.stderr;
+  }
+}
+
+/**
+ * Classify stderr text for authentication-related failures.
+ * Matches common patterns: "401", "Unauthorized", "authentication".
+ */
+function isAuthFailureStderr(stderr: string): boolean {
+  const lower = stderr.toLowerCase();
+  return lower.includes("401") || lower.includes("unauthorized") || lower.includes("authentication");
+}
+
 /**
  * On Windows, `spawn("hermes", ...)` won't find `hermes.cmd`/`.bat` shims —
  * Node doesn't honor PATHEXT. We resolve via `where` (which does) and spawn
@@ -396,7 +438,14 @@ export async function invokeHermesCli(
       } catch {
         // already gone
       }
-      reject(new Error(`hermes: process timed out after ${settings.cliTimeoutMs}ms`));
+      reject(
+        new HermesCliError({
+          kind: "timeout",
+          exitCode: null,
+          stderr: "",
+          message: `Hermes CLI timed out after ${settings.cliTimeoutMs}ms.`,
+        }),
+      );
     }, settings.cliTimeoutMs);
 
     // Forward AbortSignal.
@@ -438,11 +487,14 @@ export async function invokeHermesCli(
       signal?.removeEventListener("abort", onAbort);
       const isNotFound = err.code === "ENOENT";
       reject(
-        new Error(
-          isNotFound
+        new HermesCliError({
+          kind: "binary-not-found",
+          exitCode: null,
+          stderr: "",
+          message: isNotFound
             ? `hermes: binary not found at "${settings.binaryPath}". Install hermes or set binaryPath/HERMES_BIN.`
             : `hermes: spawn error — ${err.message}`,
-        ),
+        }),
       );
     });
 
@@ -454,7 +506,27 @@ export async function invokeHermesCli(
 
       if (code !== 0) {
         const combined = [stdout, stderr].filter(Boolean).join("\n");
-        reject(new Error(`hermes: process exited with code ${String(code)}.\n${combined}`));
+        // Classify the error based on exit code + stderr content.
+        if (isAuthFailureStderr(stderr)) {
+          reject(
+            new HermesCliError({
+              kind: "auth-failed",
+              exitCode: code,
+              stderr,
+              message:
+                "Hermes authentication failed: the API key is missing or invalid. Configure a valid API key in your Hermes profile settings.",
+            }),
+          );
+        } else {
+          reject(
+            new HermesCliError({
+              kind: "unknown",
+              exitCode: code,
+              stderr,
+              message: `hermes: process exited with code ${String(code)}.\n${combined}`,
+            }),
+          );
+        }
         return;
       }
 

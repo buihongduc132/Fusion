@@ -90,6 +90,7 @@ export default plugin;
 export { hermesRuntimeMetadata, hermesRuntimeFactory, HERMES_RUNTIME_ID };
 export { HermesRuntimeAdapter } from "./runtime-adapter.js";
 export {
+  HermesCliError,
   resolveCliSettings,
   invokeHermesCli,
   buildHermesArgs,
@@ -101,7 +102,7 @@ export {
   resolveBundledFusionSkillSource,
   resolveHermesHome,
 } from "./fusion-skill-install.js";
-export type { HermesCliSettings, HermesCliResult, HermesProfileSummary } from "./cli-spawn.js";
+export type { HermesCliSettings, HermesCliResult, HermesProfileSummary, HermesCliErrorKind } from "./cli-spawn.js";
 
 // Probe re-export for the dashboard's runtime-provider-probes façade.
 export { probeHermesBinary } from "./probe.js";

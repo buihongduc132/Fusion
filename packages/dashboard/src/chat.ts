@@ -289,6 +289,19 @@ function normalizeFailureCode(code: unknown): string | undefined {
   return undefined;
 }
 
+function classifyRuntimeError(error: unknown): ChatFailureReference | undefined {
+  // String-based classification to avoid cross-package plugin dependency.
+  // Detects Hermes Runtime errors by message prefix.
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    const message = typeof record.message === "string" ? record.message : "";
+    if (message.startsWith("Hermes")) {
+      return { kind: "runtime", id: "hermes", label: "Hermes Runtime" };
+    }
+  }
+  return undefined;
+}
+
 function buildChatFailureInfo(error: unknown, fallbackSummary = "AI processing failed"): ChatFailureInfo {
   if (typeof error === "string") {
     const summary = error.trim() || fallbackSummary;
@@ -303,6 +316,7 @@ function buildChatFailureInfo(error: unknown, fallbackSummary = "AI processing f
     const detail = typeof record.stack === "string" && record.stack.trim() && record.stack.trim() !== summary
       ? record.stack.trim()
       : undefined;
+    const reference = classifyRuntimeError(error);
     return {
       summary,
       ...(typeof record.name === "string" && record.name.trim() && record.name.trim() !== "Error"
@@ -310,6 +324,7 @@ function buildChatFailureInfo(error: unknown, fallbackSummary = "AI processing f
         : {}),
       ...(normalizeFailureCode(record.code) ? { code: normalizeFailureCode(record.code) } : {}),
       ...(detail ? { detail } : {}),
+      ...(reference ? { reference } : {}),
     };
   }
 

@@ -10,6 +10,7 @@ vi.mock("node:child_process", () => ({ spawn: mockSpawn }));
 
 import {
   buildHermesArgs,
+  HermesCliError,
   invokeHermesCli,
   listHermesProfiles,
   parseHermesOutput,
@@ -359,6 +360,114 @@ describe("invokeHermesCli", () => {
 
     await expect(promise).rejects.toThrow(/aborted/);
     expect(kill).toHaveBeenCalledWith("SIGTERM");
+  });
+});
+
+// ── invokeHermesCli — HermesCliError classification ──────────────────────────
+
+describe("invokeHermesCli — HermesCliError classification", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("classifies stderr containing '401 Unauthorized' as auth-failed", async () => {
+    const { child, emitStdout, emitStderr, emitClose } = makeFakeChild();
+    mockSpawn.mockReturnValue(child);
+
+    const promise = invokeHermesCli("hi", defaultSettings());
+    emitStdout("");
+    emitStderr("Error: 401 Unauthorized – invalid API key");
+    emitClose(1);
+
+    try {
+      await promise;
+      expect.unreachable("should have rejected");
+    } catch (err) {
+      expect(err).toBeInstanceOf(HermesCliError);
+      const cliErr = err as HermesCliError;
+      expect(cliErr.kind).toBe("auth-failed");
+      expect(cliErr.exitCode).toBe(1);
+      expect(cliErr.message).toContain("authentication failed");
+      expect(cliErr.stderr).toContain("401 Unauthorized");
+    }
+  });
+
+  it("classifies stderr containing 'authentication failed' as auth-failed", async () => {
+    const { child, emitStdout, emitStderr, emitClose } = makeFakeChild();
+    mockSpawn.mockReturnValue(child);
+
+    const promise = invokeHermesCli("hi", defaultSettings());
+    emitStdout("");
+    emitStderr("FATAL: authentication failed for provider");
+    emitClose(1);
+
+    try {
+      await promise;
+      expect.unreachable("should have rejected");
+    } catch (err) {
+      expect(err).toBeInstanceOf(HermesCliError);
+      expect((err as HermesCliError).kind).toBe("auth-failed");
+    }
+  });
+
+  it("classifies ENOENT as binary-not-found", async () => {
+    const { child, emitError } = makeFakeChild();
+    mockSpawn.mockReturnValue(child);
+
+    const promise = invokeHermesCli("hi", defaultSettings());
+    const err = Object.assign(new Error("spawn hermes ENOENT"), { code: "ENOENT" });
+    emitError(err);
+
+    try {
+      await promise;
+      expect.unreachable("should have rejected");
+    } catch (err) {
+      expect(err).toBeInstanceOf(HermesCliError);
+      const cliErr = err as HermesCliError;
+      expect(cliErr.kind).toBe("binary-not-found");
+      expect(cliErr.message).toContain("binary not found");
+    }
+  });
+
+  it("classifies timeout as timeout", async () => {
+    const { child } = makeFakeChild();
+    mockSpawn.mockReturnValue(child);
+
+    const settings = defaultSettings({ cliTimeoutMs: 50 });
+    const promise = invokeHermesCli("hi", settings);
+
+    // Don't emit any events — let the timer expire.
+
+    try {
+      await promise;
+      expect.unreachable("should have rejected");
+    } catch (err) {
+      expect(err).toBeInstanceOf(HermesCliError);
+      const cliErr = err as HermesCliError;
+      expect(cliErr.kind).toBe("timeout");
+      expect(cliErr.message).toContain("timed out");
+    }
+  });
+
+  it("classifies generic non-zero exit as unknown", async () => {
+    const { child, emitStdout, emitStderr, emitClose } = makeFakeChild();
+    mockSpawn.mockReturnValue(child);
+
+    const promise = invokeHermesCli("hi", defaultSettings());
+    emitStdout("some output");
+    emitStderr("generic error");
+    emitClose(42);
+
+    try {
+      await promise;
+      expect.unreachable("should have rejected");
+    } catch (err) {
+      expect(err).toBeInstanceOf(HermesCliError);
+      const cliErr = err as HermesCliError;
+      expect(cliErr.kind).toBe("unknown");
+      expect(cliErr.exitCode).toBe(42);
+      expect(cliErr.message).toContain("exited with code 42");
+    }
   });
 });
 

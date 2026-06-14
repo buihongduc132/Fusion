@@ -7,6 +7,7 @@
  */
 
 import { invokeHermesCli, resolveCliSettings } from "./cli-spawn.js";
+import { HermesCliError } from "./cli-spawn.js";
 import type { HermesCliSettings } from "./cli-spawn.js";
 import type {
   AgentRuntime,
@@ -82,13 +83,41 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     const promptWithContext = resumeId
       ? prompt
       : `${session.fusedSystemPrompt}\n\nUser request:\n${prompt}`;
-    const result = await invokeHermesCli(promptWithContext, this.settings, resumeId);
 
-    session.sessionId = result.sessionId;
-    session.lastModelDescription = this.describeFromSettings();
+    try {
+      const result = await invokeHermesCli(promptWithContext, this.settings, resumeId);
 
-    if (result.body) {
-      session.callbacks.onText?.(result.body);
+      session.sessionId = result.sessionId;
+      session.lastModelDescription = this.describeFromSettings();
+
+      if (result.body) {
+        session.callbacks.onText?.(result.body);
+      }
+    } catch (err) {
+      if (err instanceof HermesCliError) {
+        let userMessage: string;
+        switch (err.kind) {
+          case "auth-failed":
+            userMessage =
+              "Hermes is not properly configured: API key is missing or invalid. Open Settings → Runtimes → Hermes to configure your API key and profile.";
+            break;
+          case "binary-not-found":
+            userMessage =
+              "Hermes CLI binary not found. Install Hermes or configure the binary path in Settings → Runtimes → Hermes.";
+            break;
+          case "timeout":
+            userMessage =
+              "Hermes CLI timed out. The model provider may be unreachable.";
+            break;
+          default:
+            userMessage = err.message;
+            break;
+        }
+        const wrapped = new Error(userMessage);
+        wrapped.cause = err;
+        throw wrapped;
+      }
+      throw err;
     }
   }
 

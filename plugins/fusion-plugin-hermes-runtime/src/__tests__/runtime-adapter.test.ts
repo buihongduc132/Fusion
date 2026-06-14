@@ -166,3 +166,117 @@ describe("HermesRuntimeAdapter — dispose", () => {
     await expect(adapter.dispose!(session)).resolves.toBeUndefined();
   });
 });
+
+describe("HermesRuntimeAdapter — promptWithFallback error wrapping", () => {
+  it("wraps HermesCliError auth-failed with user-facing message and preserves cause", async () => {
+    const { HermesCliError: ActualHermesCliError } = await import("../cli-spawn.js");
+    const authError = new ActualHermesCliError({
+      kind: "auth-failed",
+      exitCode: 1,
+      stderr: "401 Unauthorized",
+      message: "Hermes authentication failed: the API key is missing or invalid.",
+    });
+    mockInvoke.mockRejectedValueOnce(authError);
+
+    const adapter = new HermesRuntimeAdapter({});
+    const { session } = await adapter.createSession({
+      cwd: "/repo",
+      systemPrompt: "sys",
+    });
+
+    try {
+      await adapter.promptWithFallback(session, "test");
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toContain("API key is missing or invalid");
+      expect((err as Error).message).toContain("Settings");
+      expect((err as Error).cause).toBe(authError);
+    }
+  });
+
+  it("wraps HermesCliError binary-not-found with user-facing message", async () => {
+    const { HermesCliError: ActualHermesCliError } = await import("../cli-spawn.js");
+    const binError = new ActualHermesCliError({
+      kind: "binary-not-found",
+      exitCode: null,
+      stderr: "",
+      message: "hermes: binary not found",
+    });
+    mockInvoke.mockRejectedValueOnce(binError);
+
+    const adapter = new HermesRuntimeAdapter({});
+    const { session } = await adapter.createSession({
+      cwd: "/repo",
+      systemPrompt: "sys",
+    });
+
+    try {
+      await adapter.promptWithFallback(session, "test");
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toContain("binary not found");
+      expect((err as Error).message).toContain("Install Hermes");
+      expect((err as Error).cause).toBe(binError);
+    }
+  });
+
+  it("wraps HermesCliError timeout with user-facing message", async () => {
+    const { HermesCliError: ActualHermesCliError } = await import("../cli-spawn.js");
+    const timeoutError = new ActualHermesCliError({
+      kind: "timeout",
+      exitCode: null,
+      stderr: "",
+      message: "Hermes CLI timed out after 5000ms.",
+    });
+    mockInvoke.mockRejectedValueOnce(timeoutError);
+
+    const adapter = new HermesRuntimeAdapter({});
+    const { session } = await adapter.createSession({
+      cwd: "/repo",
+      systemPrompt: "sys",
+    });
+
+    try {
+      await adapter.promptWithFallback(session, "test");
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toContain("timed out");
+      expect((err as Error).cause).toBe(timeoutError);
+    }
+  });
+
+  it("lets non-HermesCliError exceptions propagate unchanged", async () => {
+    const genericError = new Error("something unexpected");
+    mockInvoke.mockRejectedValueOnce(genericError);
+
+    const adapter = new HermesRuntimeAdapter({});
+    const { session } = await adapter.createSession({
+      cwd: "/repo",
+      systemPrompt: "sys",
+    });
+
+    await expect(adapter.promptWithFallback(session, "test")).rejects.toThrow("something unexpected");
+  });
+
+  it("successful invocation still works", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      body: "Hello from Hermes!",
+      sessionId: "20260427_120000_abc123",
+    });
+
+    const adapter = new HermesRuntimeAdapter({});
+    const onText = vi.fn();
+    const { session } = await adapter.createSession({
+      cwd: "/repo",
+      systemPrompt: "sys",
+      onText,
+    });
+
+    await adapter.promptWithFallback(session, "test");
+    expect(session.sessionId).toBe("20260427_120000_abc123");
+    expect(onText).toHaveBeenCalledWith("Hello from Hermes!");
+  });
+});

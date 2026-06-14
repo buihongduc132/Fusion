@@ -844,6 +844,68 @@ describe("ChatManager.sendMessage", () => {
     }));
   });
 
+  it("surfaces Hermes runtime errors with structured reference in failureInfo", async () => {
+    const authError = new Error(
+      "Hermes is not properly configured: API key is missing or invalid. Open Settings → Runtimes → Hermes to configure your API key and profile.",
+    );
+    (authError as any).cause = new Error("original stderr");
+
+    const createResolvedSession = vi.fn(async () => ({
+      session: {
+        prompt: vi.fn().mockRejectedValue(authError),
+        dispose: vi.fn(),
+        state: { messages: [] },
+      },
+    }));
+    __setCreateResolvedAgentSession(createResolvedSession as any);
+
+    mockAgentStore.getAgent.mockResolvedValue({
+      id: "agent-001",
+      name: "HermesAgent",
+      role: "executor",
+      soul: "Be calm and precise.",
+      memory: "",
+      instructionsText: "",
+      runtimeConfig: {
+        runtimeHint: "hermes-runtime",
+      },
+    });
+
+    const events: Array<{ type: string; data: unknown }> = [];
+    const unsubscribe = chatStreamManager.subscribe("chat-001", (event) => {
+      events.push(event);
+    });
+
+    const chatManager = createChatManager();
+    await chatManager.sendMessage("chat-001", "Hello");
+    unsubscribe();
+
+    // Verify failure message persisted with Hermes reference
+    const assistantCalls = mockChatStore.addMessage.mock.calls.filter(
+      (call) => call[1].role === "assistant" && call[1].metadata?.failureInfo,
+    );
+    expect(assistantCalls.length).toBeGreaterThanOrEqual(1);
+
+    const failureInfo = assistantCalls[0]![1].metadata.failureInfo;
+    expect(failureInfo.summary).toContain("Hermes");
+    expect(failureInfo.summary).toContain("API key");
+    expect(failureInfo.reference).toEqual({
+      kind: "runtime",
+      id: "hermes",
+      label: "Hermes Runtime",
+    });
+
+    // Verify SSE error event includes the same structured reference
+    const errorEvents = events.filter((e) => e.type === "error");
+    expect(errorEvents).toHaveLength(1);
+    expect(errorEvents[0]!.data).toEqual(
+      expect.objectContaining({
+        summary: expect.stringContaining("Hermes"),
+        reference: { kind: "runtime", id: "hermes", label: "Hermes Runtime" },
+      }),
+    );
+  });
+
   it("does not inject mailbox tools for non-agent chat sessions", async () => {
     mockChatStore.getSession.mockReturnValue({
       id: "chat-001",
