@@ -106,78 +106,8 @@ function isMissionInterviewDraftStatus(
   return (MISSION_INTERVIEW_DRAFT_STATUSES as readonly string[]).includes(status);
 }
 
-/** Mission interview system prompt */
-export const MISSION_INTERVIEW_SYSTEM_PROMPT = `You are a mission planning assistant for a project management system.
-
-Your job: help users transform high-level goals into structured mission plans with milestones, slices, and features — each with verification criteria.
-
-## Mission Hierarchy
-- Mission: The top-level objective (the user will provide this)
-- Milestone: A major phase or deliverable within the mission (e.g., "Foundation & Infrastructure", "Core Feature Development", "Polish & Release"). Each milestone has verification criteria that define how to confirm the phase is complete.
-- Slice: A focused work unit within a milestone that can be activated and worked on independently (e.g., "Auth system setup", "API endpoints", "UI components"). Each slice has verification criteria.
-- Feature: A specific deliverable within a slice, detailed enough to become a task (e.g., "JWT token refresh endpoint", "Password reset email template"). Each feature has acceptance criteria.
-
-## Conversation Flow
-1. The user describes their mission goal
-2. Ask clarifying questions to understand scope, constraints, technical context, user needs, and priorities
-3. Push back on vague objectives — ask for specifics
-4. Challenge unrealistic scope — suggest phasing
-5. Once you have enough information (typically 4-8 questions), produce the structured plan
-6. The plan should be thorough — break every milestone into slices, every slice into features
-
-## Question Types to Use
-PREFER structured question types over free-text. This makes the interview faster and more focused.
-
-- "single_select" (DEFAULT): Use for most questions. Provide 3–6 options covering the common choices.
-  ALWAYS include an "Other (please describe)" or "Custom" option as the LAST option so users can provide free-form input.
-  Examples: tech stack, deployment target, priority level, integration approach, architecture style.
-- "multi_select": Use when multiple options can apply simultaneously (e.g., features to include, platforms to support, security requirements).
-  Provide 4–6 options. Include an "Other (please describe)" option at the end.
-- "confirm": Use for simple yes/no or go/no-go decisions (e.g., "Should we include offline support?", "Is backwards compatibility required?").
-- "text": Use ONLY when genuinely needed — asking for a project name, URL, specific API endpoint, or other unique free-form values that cannot be reasonably optioned.
-
-## Question Design Guidelines
-- Provide specific, well-crafted option labels and descriptions so users can quickly select without thinking
-- Options should be mutually exclusive and collectively exhaustive for single_select
-- Use domain-appropriate jargon in option labels (developers understand "GraphQL", "REST", "gRPC")
-- Include 3–6 options per question — never fewer than 3, rarely more than 6
-- The last option should always be something like { "id": "other", "label": "Other (please describe)" } for single_select, or similar for multi_select
-- Start with big-picture scope questions, then narrow into specifics
-- Ask about target users, key constraints, technical preferences, timeline
-- Each milestone should represent a meaningful phase boundary or checkpoint
-- Each slice should be independently shippable work
-- Features should be specific and actionable
-- ALWAYS include verification/acceptance criteria at every level:
-  - Milestone: "verification" field — how to confirm this phase is complete (e.g., "All API endpoints return correct responses, integration tests pass")
-  - Milestone: optional "acceptanceCriteria" field for explicit milestone-level completion bars (if omitted, acceptance can be auto-derived from child feature criteria/descriptions)
-  - Slice: "verification" field — how to confirm this work unit is done (e.g., "Auth flow works end-to-end from signup through login")
-  - Feature: "acceptanceCriteria" field — how to verify this specific deliverable (e.g., "JWT tokens expire after 1 hour and refresh correctly")
-- Suggest sensible defaults and push for specificity
-- Aim for 2-4 milestones, 1-3 slices per milestone, 2-5 features per slice
-- Keep the plan realistic and achievable
-
-## Board tools
-- fn_task_list — list active tasks
-- fn_task_get — read a task's full details and PROMPT.md
-Use these to avoid duplicating an existing in-flight plan and to anchor your questions against current backlog context.
-
-## Response Format
-Always respond with valid JSON in one of these formats:
-
-For single_select question (DEFAULT — use this for most questions):
-{"type": "question", "data": {"id": "q-tech-stack", "type": "single_select", "question": "What is the primary technology stack?", "description": "Select the main framework or stack for the project", "options": [{"id": "react-ts", "label": "React + TypeScript", "description": "Component-based UI with type safety"}, {"id": "nextjs", "label": "Next.js", "description": "Full-stack React framework with SSR"}, {"id": "vue", "label": "Vue.js", "description": "Progressive JavaScript framework"}, {"id": "backend-only", "label": "Backend / API only", "description": "No frontend, pure server-side project"}, {"id": "other", "label": "Other (please describe)", "description": "Specify your custom stack"}]}}
-
-For multi_select question:
-{"type": "question", "data": {"id": "q-platforms", "type": "multi_select", "question": "Which platforms should be supported?", "description": "Select all that apply", "options": [{"id": "web", "label": "Web browser", "description": "Desktop and mobile web"}, {"id": "ios", "label": "iOS", "description": "iPhone and iPad"}, {"id": "android", "label": "Android", "description": "Phones and tablets"}, {"id": "desktop", "label": "Desktop app", "description": "Electron or native desktop"}, {"id": "api", "label": "API / headless", "description": "Programmatic access only"}, {"id": "other", "label": "Other (please describe)", "description": "Specify additional platforms"}]}}
-
-For confirm question:
-{"type": "question", "data": {"id": "q-auth", "type": "confirm", "question": "Should the system require user authentication?", "description": "Login, sessions, and access control"}}
-
-For text question (use ONLY for names, URLs, or truly unique free-form input):
-{"type": "question", "data": {"id": "q-project-name", "type": "text", "question": "What is the project or product name?", "description": "Used in documentation and configuration"}}
-
-For completion (when you have enough information):
-{"type": "complete", "data": {"missionTitle": "Refined mission title", "missionDescription": "Comprehensive mission description based on the conversation", "milestones": [{"title": "Milestone title", "description": "What this phase achieves", "verification": "How to confirm this milestone is complete", "acceptanceCriteria": "Optional explicit milestone criteria (omit to auto-derive from features)", "slices": [{"title": "Slice title", "description": "What this work unit covers", "verification": "How to confirm this slice is done", "features": [{"title": "Feature title", "description": "What to build", "acceptanceCriteria": "How to verify this feature works"}]}]}]}}`;
+// The mission interview system prompt lives in PROMPT_KEY_CATALOG["mission-interview-system"].defaultContent
+// (packages/core/src/prompt-overrides.ts) and is resolved at runtime via resolvePrompt().
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -212,9 +142,10 @@ export interface MissionPlanSummary {
   milestones: MissionPlanMilestone[];
 }
 
-/** Response from interview: either a question or a completed plan */
+/** Response from interview: a single question, a batch of questions, or a completed plan */
 export type MissionInterviewResponse =
   | { type: "question"; data: PlanningQuestion }
+  | { type: "questions"; data: PlanningQuestion[] }
   | { type: "complete"; data: MissionPlanSummary };
 
 export interface MissionInterviewDraftSummary {
@@ -232,6 +163,7 @@ export type MissionInterviewStreamEvent =
   | { type: "thinking"; data: string }
   | { type: "text"; data: string }
   | { type: "question"; data: PlanningQuestion }
+  | { type: "questions"; data: PlanningQuestion[] }
   | { type: "summary"; data: MissionPlanSummary }
   | { type: "error"; data: string }
   | { type: "complete" };
@@ -240,7 +172,7 @@ export type MissionInterviewStreamEvent =
 export type MissionInterviewStreamCallback = (event: MissionInterviewStreamEvent, eventId?: number) => void;
 
 interface MissionInterviewHistoryEntry {
-  question: PlanningQuestion;
+  question: PlanningQuestion | PlanningQuestion[];
   response: unknown;
   thinkingOutput?: string;
 }
@@ -253,13 +185,14 @@ interface MissionInterviewSession {
   missionId: string;
   missionTitle: string;
   history: MissionInterviewHistoryEntry[];
-  currentQuestion?: PlanningQuestion;
+  /** Active questions for the current turn. Single question = 1-element array. */
+  currentQuestions: PlanningQuestion[];
   summary?: MissionPlanSummary;
   /** Last terminal error for retry UX */
   error?: string;
   agent?: AgentResult;
   thinkingOutput: string;
-  /** Thinking output generated while producing currentQuestion */
+  /** Thinking output generated while producing currentQuestions */
   lastGeneratedThinking: string;
   /** Model override for this interview session */
   modelProvider?: string;
@@ -272,6 +205,10 @@ interface MissionInterviewSession {
   rootDir?: string;
   createdAt: Date;
   updatedAt: Date;
+  /** Number of completed turns (user response submissions) */
+  turnCount: number;
+  /** Maximum allowed turns before forcing completion */
+  maxTurns: number;
 }
 
 interface RateLimitEntry {
@@ -354,9 +291,11 @@ function persistMissionSession(session: MissionInterviewSession, status: "genera
       missionId: session.missionId,
       modelProvider: session.modelProvider,
       modelId: session.modelId,
+      turnCount: session.turnCount,
+      maxTurns: session.maxTurns,
     }),
     conversationHistory: JSON.stringify(session.history),
-    currentQuestion: session.currentQuestion ? JSON.stringify(session.currentQuestion) : null,
+    currentQuestion: session.currentQuestions.length > 0 ? JSON.stringify(session.currentQuestions) : null,
     result: session.summary ? JSON.stringify(session.summary) : null,
     thinkingOutput: session.thinkingOutput,
     error: error ?? null,
@@ -380,7 +319,7 @@ function unpersistMissionSession(sessionId: string): void {
 }
 
 function buildMissionInterviewSessionFromRow(row: AiSessionRow): MissionInterviewSession {
-  const payload = safeParseJson<{ ip?: string; projectId?: string | null; missionId?: string; missionTitle?: string; modelProvider?: string; modelId?: string }>(
+  const payload = safeParseJson<{ ip?: string; projectId?: string | null; missionId?: string; missionTitle?: string; modelProvider?: string; modelId?: string; turnCount?: number; maxTurns?: number }>(
     row.inputPayload,
     {},
     { throwOnError: true, fieldName: "inputPayload" },
@@ -404,12 +343,18 @@ function buildMissionInterviewSessionFromRow(row: AiSessionRow): MissionIntervie
       [],
       { throwOnError: true, fieldName: "conversationHistory" },
     ),
-    currentQuestion: row.currentQuestion
-      ? (safeParseJson<PlanningQuestion | null>(row.currentQuestion, null, {
-          throwOnError: true,
-          fieldName: "currentQuestion",
-        }) ?? undefined)
-      : undefined,
+    // Normalize legacy single-question or new array format to PlanningQuestion[]
+    ...(() => {
+      const raw = row.currentQuestion
+        ? safeParseJson<PlanningQuestion[] | PlanningQuestion | null>(row.currentQuestion, null, {
+            throwOnError: true,
+            fieldName: "currentQuestion",
+          })
+        : null;
+      if (Array.isArray(raw)) return { currentQuestions: raw };
+      if (raw && typeof raw === "object" && "id" in raw) return { currentQuestions: [raw as PlanningQuestion] };
+      return { currentQuestions: [] as PlanningQuestion[] };
+    })(),
     summary: row.result
       ? (safeParseJson<MissionPlanSummary | null>(row.result, null, {
           throwOnError: true,
@@ -421,6 +366,8 @@ function buildMissionInterviewSessionFromRow(row: AiSessionRow): MissionIntervie
     error: row.error ?? undefined,
     modelProvider: payload.modelProvider,
     modelId: payload.modelId,
+    turnCount: payload.turnCount ?? 0,
+    maxTurns: payload.maxTurns ?? 8,
     createdAt,
     updatedAt,
     agent: undefined,
@@ -714,6 +661,26 @@ export function parseMissionAgentResponse(text: string): MissionInterviewRespons
     "data" in parsed
   ) {
     const typed = parsed as { type: string; data: unknown };
+    if (typed.type === "questions" && Array.isArray(typed.data)) {
+      // Validate each element has id, type, and question
+      for (const item of typed.data) {
+        if (
+          typeof item !== "object" ||
+          item === null ||
+          typeof (item as Record<string, unknown>).id !== "string" ||
+          typeof (item as Record<string, unknown>).type !== "string" ||
+          typeof (item as Record<string, unknown>).question !== "string"
+        ) {
+          diagnostics.error("Invalid questions array element", { element: JSON.stringify(item).slice(0, 200), operation: "parse-validate" });
+          throw new Error("AI returned invalid questions array. Each question must have id, type, and question fields.");
+        }
+      }
+      if (typed.data.length === 0) {
+        diagnostics.error("Empty questions array from AI", { operation: "parse-validate" });
+        throw new Error("AI returned empty questions array.");
+      }
+      return parsed as MissionInterviewResponse;
+    }
     if (typed.type === "question" && typed.data !== null && typed.data !== undefined) {
       return parsed as MissionInterviewResponse;
     }
@@ -733,58 +700,59 @@ export function parseMissionAgentResponse(text: string): MissionInterviewRespons
 
 /**
  * Format user response as a message for the AI agent.
+ * Accepts either a single question or an array of questions (batch).
  */
 function formatResponseForAgent(
-  question: PlanningQuestion,
+  question: PlanningQuestion | PlanningQuestion[],
   responses: Record<string, unknown>
 ): string {
-  const responseValue = responses[question.id];
-  const comment = typeof responses._comment === "string" ? responses._comment.trim() : "";
+  const questions = Array.isArray(question) ? question : [question];
+  const comment = typeof responses._comment === "string" ? (responses._comment as string).trim() : "";
 
-  let formatted: string;
+  const parts = questions.map((q) => {
+    const responseValue = responses[q.id];
 
-  switch (question.type) {
-    case "text":
-      formatted = `Question: ${question.question}\n\nAnswer: ${responseValue}`;
-      break;
-    case "single_select":
-      if (typeof responseValue === "string") {
-        const option = question.options?.find((o) => o.id === responseValue);
-        formatted = `Question: ${question.question}\n\nSelected: ${option?.label || responseValue}`;
-        break;
-      }
-      formatted = `Question: ${question.question}\n\nAnswer: ${responseValue}`;
-      break;
-    case "multi_select":
-      if (Array.isArray(responseValue)) {
-        const selected = responseValue.map((id) => {
-          const option = question.options?.find((o) => o.id === id);
-          return option?.label || id;
-        });
-        formatted = `Question: ${question.question}\n\nSelected: ${selected.join(", ")}`;
-        break;
-      }
-      formatted = `Question: ${question.question}\n\nAnswer: ${responseValue}`;
-      break;
-    case "confirm":
-      formatted = `Question: ${question.question}\n\nAnswer: ${responseValue === true ? "Yes" : "No"}`;
-      break;
-    default:
-      formatted = `Question: ${question.question}\n\nAnswer: ${JSON.stringify(responseValue)}`;
-      break;
-  }
+    switch (q.type) {
+      case "text":
+        return `Question: ${q.question}\n\nAnswer: ${responseValue}`;
+      case "single_select":
+        if (typeof responseValue === "string") {
+          const option = q.options?.find((o) => o.id === responseValue);
+          return `Question: ${q.question}\n\nSelected: ${option?.label || responseValue}`;
+        }
+        return `Question: ${q.question}\n\nAnswer: ${responseValue}`;
+      case "multi_select":
+        if (Array.isArray(responseValue)) {
+          const selected = responseValue.map((id: string) => {
+            const option = q.options?.find((o) => o.id === id);
+            return option?.label || id;
+          });
+          return `Question: ${q.question}\n\nSelected: ${selected.join(", ")}`;
+        }
+        return `Question: ${q.question}\n\nAnswer: ${responseValue}`;
+      case "confirm":
+        return `Question: ${q.question}\n\nAnswer: ${responseValue === true ? "Yes" : "No"}`;
+      default:
+        return `Question: ${q.question}\n\nAnswer: ${JSON.stringify(responseValue)}`;
+    }
+  });
 
+  const formatted = parts.join("\n\n");
   return comment.length > 0 ? `${formatted}\n\nAdditional context: ${comment}` : formatted;
 }
 
-function coerceResponseRecord(question: PlanningQuestion, response: unknown): Record<string, unknown> {
+function coerceResponseRecord(question: PlanningQuestion | PlanningQuestion[], response: unknown): Record<string, unknown> {
   if (response && typeof response === "object" && !Array.isArray(response)) {
     return response as Record<string, unknown>;
   }
 
-  return {
-    [question.id]: response,
-  };
+  // For batch questions, wrap the response under the first question's id
+  const questions = Array.isArray(question) ? question : [question];
+  const record: Record<string, unknown> = {};
+  for (const q of questions) {
+    record[q.id] = response;
+  }
+  return record;
 }
 
 function disposeMissionAgentForRetry(session: MissionInterviewSession): void {
@@ -876,7 +844,7 @@ async function createMissionInterviewAgent(
 }
 
 function formatMissionInterviewHistory(
-  history: Array<{ question: PlanningQuestion; response: unknown }>,
+  history: Array<{ question: PlanningQuestion | PlanningQuestion[]; response: unknown }>,
 ): string {
   if (history.length === 0) {
     return "";
@@ -884,18 +852,22 @@ function formatMissionInterviewHistory(
 
   return history
     .map(({ question, response }) => {
+      const questions = Array.isArray(question) ? question : [question];
       const responseRecord =
         response && typeof response === "object" && !Array.isArray(response)
           ? (response as Record<string, unknown>)
           : undefined;
-      const responseValue = responseRecord ? responseRecord[question.id] : response;
       const comment = typeof responseRecord?._comment === "string" ? responseRecord._comment.trim() : "";
 
-      const lines = [
-        `Q: ${question.question}`,
-        `A: ${typeof responseValue === "string" ? responseValue : JSON.stringify(responseValue ?? null)}`,
-      ];
+      const parts = questions.map((q) => {
+        const responseValue = responseRecord ? responseRecord[q.id] : response;
+        return [
+          `Q: ${q.question}`,
+          `A: ${typeof responseValue === "string" ? responseValue : JSON.stringify(responseValue ?? null)}`,
+        ].join("\n");
+      });
 
+      const lines = [...parts];
       if (comment.length > 0) {
         lines.push(`Comment: ${comment}`);
       }
@@ -909,7 +881,7 @@ async function ensureMissionInterviewAgent(
   session: MissionInterviewSession,
   rootDir: string | undefined,
   store: TaskStore | undefined,
-  historyForReplay: Array<{ question: PlanningQuestion; response: unknown }>,
+  historyForReplay: Array<{ question: PlanningQuestion | PlanningQuestion[]; response: unknown }>,
   promptOverrides?: PromptOverrideMap,
 ): Promise<void> {
   if (session.agent) {
@@ -1013,7 +985,14 @@ async function continueAgentConversation(session: MissionInterviewSession, messa
         const agent = session.agent!;
         session.thinkingOutput = "";
 
-        await agent.session.prompt(message);
+        // Inject final-turn nudge when approaching turn limit
+        let effectiveMessage = message;
+        if (session.turnCount >= session.maxTurns - 1) {
+          effectiveMessage =
+            `${message}\n\n[System] This is the final turn — produce the best plan you can with the information gathered so far, using the 'complete' response format.`;
+        }
+
+        await agent.session.prompt(effectiveMessage);
 
         // Get the response text from the agent's state
         interface AgentMessage {
@@ -1056,7 +1035,8 @@ async function continueAgentConversation(session: MissionInterviewSession, messa
                 session.thinkingOutput = "";
                 await agent.session.prompt(
                   "Your previous response could not be parsed as JSON. " +
-                  'Please respond with ONLY a valid JSON object: either {"type":"question","data":{...}} ' +
+                  'Please respond with ONLY a valid JSON object: either {"type":"questions","data":[...]} (batch questions), ' +
+                  '{"type":"question","data":{...}} (single question), ' +
                   'or {"type":"complete","data":{"missionTitle":"...","missionDescription":"...","milestones":[...]}}. ' +
                   "No markdown, no explanation, just the JSON."
                 );
@@ -1095,8 +1075,18 @@ async function continueAgentConversation(session: MissionInterviewSession, messa
           return;
         }
 
-        if (parsed.type === "question") {
-          session.currentQuestion = parsed.data;
+        if (parsed.type === "questions") {
+          session.currentQuestions = parsed.data;
+          session.error = undefined;
+          session.lastGeneratedThinking = session.thinkingOutput;
+          session.updatedAt = new Date();
+          persistMissionSession(session, "awaiting_input");
+          missionInterviewStreamManager.broadcast(session.id, {
+            type: "questions",
+            data: parsed.data,
+          });
+        } else if (parsed.type === "question") {
+          session.currentQuestions = [parsed.data];
           session.error = undefined;
           session.lastGeneratedThinking = session.thinkingOutput;
           session.updatedAt = new Date();
@@ -1107,7 +1097,7 @@ async function continueAgentConversation(session: MissionInterviewSession, messa
           });
         } else if (parsed.type === "complete") {
           session.summary = parsed.data;
-          session.currentQuestion = undefined;
+          session.currentQuestions = [];
           session.error = undefined;
           session.updatedAt = new Date();
           persistMissionSession(session, "complete");
@@ -1146,6 +1136,7 @@ export async function createMissionInterviewSession(
   modelProvider?: string,
   modelId?: string,
   projectId?: string | null,
+  maxTurns?: number,
 ): Promise<string> {
   if (!checkRateLimit(ip)) {
     const resetTime = getRateLimitResetTime(ip);
@@ -1164,8 +1155,11 @@ export async function createMissionInterviewSession(
     missionId: "",
     missionTitle,
     history: [],
+    currentQuestions: [],
     thinkingOutput: "",
     lastGeneratedThinking: "",
+    turnCount: 0,
+    maxTurns: maxTurns ?? 8,
     modelProvider,
     modelId,
     store,
@@ -1209,16 +1203,20 @@ export async function submitMissionInterviewResponse(
   if (store && !session.store) session.store = store;
   if (rootDir && !session.rootDir) session.rootDir = rootDir;
 
-  if (!session.currentQuestion) {
+  if (session.currentQuestions.length === 0) {
     throw new InvalidSessionStateError("No active question in session");
   }
 
-  // Record the response
+  // Record the response with the current questions (batch or single)
+  const activeQuestions = session.currentQuestions.length === 1
+    ? session.currentQuestions[0]
+    : session.currentQuestions;
   session.history.push({
-    question: session.currentQuestion,
+    question: activeQuestions,
     response: responses,
     thinkingOutput: session.lastGeneratedThinking || "",
   });
+  session.turnCount += 1;
   session.error = undefined;
   persistMissionSession(session, "generating");
 
@@ -1227,14 +1225,17 @@ export async function submitMissionInterviewResponse(
     await ensureMissionInterviewAgent(session, rootDir, store, replayHistory, promptOverrides);
   }
 
-  const message = formatResponseForAgent(session.currentQuestion, responses);
+  const message = formatResponseForAgent(session.currentQuestions, responses);
   await continueAgentConversation(session, message);
 
   if (session.summary) {
     return { type: "complete", data: session.summary };
   }
-  if (session.currentQuestion) {
-    return { type: "question", data: session.currentQuestion };
+  if (session.currentQuestions.length > 1) {
+    return { type: "questions", data: session.currentQuestions };
+  }
+  if (session.currentQuestions.length === 1) {
+    return { type: "question", data: session.currentQuestions[0] };
   }
   // Fallback — should not happen with a working agent
   return {
@@ -1306,6 +1307,29 @@ export async function cancelMissionInterviewSession(sessionId: string): Promise<
   }
 
   unpersistMissionSession(sessionId);
+}
+
+/**
+ * Extend the turn limit for an in-progress interview session.
+ * Allows users to continue planning when the AI hasn't produced a complete plan
+ * by the turn limit.
+ * @param sessionId - The interview session ID
+ * @param additionalTurns - Number of additional turns to add (default: 4, max: 20)
+ */
+export function extendMissionInterviewTurns(sessionId: string, additionalTurns?: number): void {
+  const session = getMissionInterviewSession(sessionId);
+  if (!session) {
+    throw new SessionNotFoundError(`Mission interview session ${sessionId} not found or expired`);
+  }
+
+  const turns = additionalTurns ?? 4;
+  if (!Number.isInteger(turns) || turns < 1 || turns > 20) {
+    throw new InvalidSessionStateError("additionalTurns must be a positive integer between 1 and 20");
+  }
+
+  session.maxTurns += turns;
+  session.updatedAt = new Date();
+  persistMissionSession(session, session.summary ? "complete" : "awaiting_input");
 }
 
 export function listMissionInterviewDrafts(projectId?: string): MissionInterviewDraftSummary[] {
@@ -1410,8 +1434,11 @@ export function __registerMissionInterviewSessionForTest(sessionId: string, miss
     missionId: "",
     missionTitle,
     history: [],
+    currentQuestions: [],
     thinkingOutput: "",
     lastGeneratedThinking: "",
+    turnCount: 0,
+    maxTurns: 8,
     createdAt: new Date(),
     updatedAt: new Date(),
   });

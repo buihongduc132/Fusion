@@ -10,13 +10,17 @@ interface ConversationHistoryProps {
   defaultShowThinking?: boolean;
 }
 
-interface NumberedEntry extends ConversationHistoryEntry {
+interface NumberedEntry extends Omit<ConversationHistoryEntry, "question"> {
+  question?: PlanningQuestion;
   questionNumber: number | null;
 }
 
 function getResponseValue(entry: ConversationHistoryEntry): unknown {
   const { question, response } = entry;
   if (!question) return response;
+
+  // Handle batch questions — return the full response object
+  if (Array.isArray(question)) return response;
 
   if (response && typeof response === "object" && !Array.isArray(response)) {
     const record = response as Record<string, unknown>;
@@ -71,8 +75,16 @@ function normalizeEntries(entries: ConversationHistoryEntry[]): NumberedEntry[] 
 
   for (const entry of entries) {
     if (entry.question) {
-      questionCounter += 1;
-      normalized.push({ ...entry, questionNumber: questionCounter });
+      if (Array.isArray(entry.question)) {
+        // Batch questions: expand each question into its own entry
+        for (const q of entry.question) {
+          questionCounter += 1;
+          normalized.push({ ...entry, question: q, questionNumber: questionCounter });
+        }
+      } else {
+        questionCounter += 1;
+        normalized.push({ ...entry, questionNumber: questionCounter });
+      }
       continue;
     }
 

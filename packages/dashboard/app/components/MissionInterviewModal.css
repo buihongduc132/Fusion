@@ -131,3 +131,27 @@
 .roadmap-shrink {
   flex-shrink: 0;
 }
+
+/* Multi-question batch layout */
+.planning-question-item {
+  padding-bottom: var(--space-md);
+}
+
+.planning-question-number {
+  font-size: calc(var(--space-sm) + var(--space-xs) * 0.75);
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-xs);
+}
+
+.planning-question-divider {
+  border-top: 1px solid var(--border);
+  margin: var(--space-md) 0;
+}
+
+.planning-turn-indicator {
+  color: var(--text-muted);
+  font-size: calc(var(--space-sm) + var(--space-xs) * 0.75);
+}

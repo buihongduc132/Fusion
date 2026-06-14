@@ -764,6 +764,47 @@ export function createMissionRouter(
   );
 
   /**
+   * POST /api/missions/interview/:sessionId/extend
+   * Extend the turn limit for an in-progress interview session.
+   * Body: { additionalTurns?: number } (default: 4, max: 20)
+   *
+   * UTILITY PATH: Independent of task-lane saturation.
+   */
+  router.post(
+    "/interview/:sessionId/extend",
+    catchTypedHandler(async (req, res) => {
+      const { sessionId } = req.params;
+
+      if (!sessionId || typeof sessionId !== "string") {
+        throw badRequest("sessionId is required");
+      }
+
+      const { additionalTurns } = req.body ?? {};
+      if (additionalTurns !== undefined) {
+        if (typeof additionalTurns !== "number" || !Number.isInteger(additionalTurns) || additionalTurns < 1 || additionalTurns > 20) {
+          throw badRequest("additionalTurns must be a positive integer between 1 and 20");
+        }
+      }
+
+      try {
+        const { extendMissionInterviewTurns } = await import("./mission-interview.js");
+        extendMissionInterviewTurns(sessionId, additionalTurns);
+        res.json({ success: true });
+      } catch (err: unknown) {
+        const errName = err instanceof Error ? err.name : "";
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (errName === "SessionNotFoundError") {
+          throw notFound(errMsg);
+        } else if (errName === "InvalidSessionStateError") {
+          throw badRequest(errMsg);
+        } else {
+          throw internalError(errMsg || "Failed to extend interview session");
+        }
+      }
+    })
+  );
+
+  /**
    * GET /api/missions/interview/:sessionId/stream
    * SSE endpoint for real-time interview session updates.
    * Streams thinking output, questions, summaries, and errors.

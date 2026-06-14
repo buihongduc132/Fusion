@@ -13,10 +13,12 @@ vi.mock("@fusion/engine", () => ({
 
 import {
   __resetMissionInterviewState,
+  __registerMissionInterviewSessionForTest,
   cancelMissionInterviewSession,
   checkRateLimit,
   cleanupMissionInterviewSession,
   createMissionInterviewSession,
+  extendMissionInterviewTurns,
   retryMissionInterviewSession,
   getMissionInterviewSession,
   getMissionInterviewSummary,
@@ -61,6 +63,26 @@ function createQuestionJson(id = "q-1"): string {
   });
 }
 
+function createQuestionsJson(ids = ["q-1", "q-2"]): string {
+  return JSON.stringify({
+    type: "questions",
+    data: ids.map((id, i) => ({
+      id,
+      type: i === 0 ? "single_select" : "text",
+      question: `Question ${i + 1}?`,
+      description: `Description ${i + 1}`,
+      ...(i === 0
+        ? {
+            options: [
+              { id: "a", label: "Option A", description: "First" },
+              { id: "b", label: "Option B", description: "Second" },
+            ],
+          }
+        : {}),
+    })),
+  });
+}
+
 function createCompleteJson(): string {
   return JSON.stringify({
     type: "complete",
@@ -102,12 +124,12 @@ function createMockAgent(responses: string[]) {
 
 async function waitForCurrentQuestion(sessionId: string): Promise<void> {
   for (let i = 0; i < 50; i++) {
-    if (getMissionInterviewSession(sessionId)?.currentQuestion) {
+    if (getMissionInterviewSession(sessionId)?.currentQuestions?.length) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  throw new Error("Timed out waiting for currentQuestion");
+  throw new Error("Timed out waiting for currentQuestions");
 }
 
 class MockAiSessionStore extends EventEmitter {
@@ -337,7 +359,7 @@ describe("mission-interview module", () => {
       expect(session?.id).toBe(missionRow.id);
       expect(session?.ip).toBe("127.0.0.1");
       expect(session?.missionId).toBe("mission-123");
-      expect(session?.currentQuestion?.id).toBe("q-2");
+      expect(session?.currentQuestions?.[0]?.id).toBe("q-2");
       expect(session?.agent).toBeUndefined();
       expect(getMissionInterviewSession(planningRow.id)).toBeUndefined();
     });
@@ -434,7 +456,7 @@ describe("mission-interview module", () => {
       await waitForCurrentQuestion(sessionId);
 
       const session = getMissionInterviewSession(sessionId);
-      const questionId = session?.currentQuestion?.id;
+      const questionId = session?.currentQuestions?.[0]?.id;
       expect(questionId).toBe("q-plan");
 
       const result = await submitMissionInterviewResponse(sessionId, {
@@ -501,7 +523,7 @@ describe("mission-interview module", () => {
 
       const session = getMissionInterviewSession(sessionId);
       if (!session) throw new Error("session should exist");
-      session.currentQuestion = undefined;
+      session.currentQuestions = [];
 
       await expect(submitMissionInterviewResponse(sessionId, {})).rejects.toBeInstanceOf(InvalidSessionStateError);
     });
@@ -550,7 +572,7 @@ describe("mission-interview module", () => {
       expect(resumedAgent.session.prompt.mock.calls[0]?.[0]).toContain("What is your goal?");
       expect(resumedAgent.session.prompt.mock.calls[0]?.[0]).toContain("Ship a dashboard");
 
-      expect(getMissionInterviewSession(row.id)?.currentQuestion?.id).toBe("q-retry");
+      expect(getMissionInterviewSession(row.id)?.currentQuestions?.[0]?.id).toBe("q-retry");
       expect(store.get(row.id)?.status).toBe("awaiting_input");
       expect(store.get(row.id)?.error).toBeNull();
     });
@@ -1112,6 +1134,223 @@ describe("mission-interview module", () => {
 
       resolveHungPrompt?.();
       await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  });
+
+  describe("multi-question batch responses", () => {
+    it("parses type: questions with valid PlanningQuestion[] data", () => {
+      const input = JSON.stringify({
+        type: "questions",
+        data: [
+          { id: "q-1", type: "text", question: "What scope?", description: "scope" },
+          { id: "q-2", type: "single_select", question: "Which platform?", options: [{ id: "web", label: "Web" }] },
+        ],
+      });
+      const parsed = parseMissionAgentResponse(input);
+      expect(parsed.type).toBe("questions");
+      if (parsed.type === "questions") {
+        expect(parsed.data).toHaveLength(2);
+        expect(parsed.data[0].id).toBe("q-1");
+        expect(parsed.data[1].id).toBe("q-2");
+      }
+    });
+
+    it("throws on empty questions array", () => {
+      const input = JSON.stringify({ type: "questions", data: [] });
+      expect(() => parseMissionAgentResponse(input)).toThrow("empty questions array");
+    });
+
+    it("throws on questions array with missing fields", () => {
+      const input = JSON.stringify({
+        type: "questions",
+        data: [{ id: "q-1", type: "text" /* missing question */ }],
+      });
+      expect(() => parseMissionAgentResponse(input)).toThrow("invalid questions array");
+    });
+
+    it("broadcasts questions event via SSE stream manager", () => {
+      __registerMissionInterviewSessionForTest("session-batch-sse");
+      const events: Array<{ type: string; data: unknown }> = [];
+      const unsub = missionInterviewStreamManager.subscribe("session-batch-sse", (event) => {
+        events.push({ type: event.type, data: (event as any).data });
+      });
+
+      const questions = [
+        { id: "q-b1", type: "text", question: "Scope?", description: "scope" },
+        { id: "q-b2", type: "confirm", question: "Deploy?", description: "deploy" },
+      ];
+      missionInterviewStreamManager.broadcast("session-batch-sse", {
+        type: "questions",
+        data: questions,
+      });
+
+      unsub();
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("questions");
+      expect(events[0].data).toHaveLength(2);
+    });
+  });
+
+  describe("turn counting and final-turn nudge", () => {
+    it("increments turnCount on each response submission", async () => {
+      mockCreateFnAgent.mockImplementation(async () => createMockAgent([
+        JSON.stringify({ type: "question", data: { id: "q-t1", type: "text", question: "Q1?" } }),
+        JSON.stringify({ type: "question", data: { id: "q-t2", type: "text", question: "Q2?" } }),
+      ]));
+
+      const sessionId = await createMissionInterviewSession("127.0.0.1", "Turn test", "/tmp/project", MOCK_TASK_STORE);
+      await waitForCurrentQuestion(sessionId);
+
+      let session = getMissionInterviewSession(sessionId)!;
+      expect(session.turnCount).toBe(0);
+
+      await submitMissionInterviewResponse(sessionId, { "q-t1": "answer 1" }, "/tmp/project", MOCK_TASK_STORE);
+      session = getMissionInterviewSession(sessionId)!;
+      expect(session.turnCount).toBe(1);
+
+      await submitMissionInterviewResponse(sessionId, { "q-t2": "answer 2" }, "/tmp/project", MOCK_TASK_STORE);
+      session = getMissionInterviewSession(sessionId)!;
+      expect(session.turnCount).toBe(2);
+    });
+
+    it("injects final-turn nudge when turnCount >= maxTurns - 1", async () => {
+      let capturedPrompt: string | undefined;
+      const messages: Array<{ role: string; content: string }> = [];
+      mockCreateFnAgent.mockImplementation(async () => ({
+        session: {
+          state: { messages },
+          prompt: vi.fn(async (msg: string) => {
+            capturedPrompt = msg;
+            const response = JSON.stringify({ type: "question", data: { id: "q-nudge", type: "text", question: "Final Q?" } });
+            messages.push({ role: "assistant", content: response });
+          }),
+          dispose: vi.fn(),
+        },
+      }));
+
+      const sessionId = await createMissionInterviewSession("127.0.0.1", "Nudge test", "/tmp/project", MOCK_TASK_STORE, undefined, undefined, undefined, undefined, 2);
+      await waitForCurrentQuestion(sessionId);
+
+      // First response (turnCount 0 -> 1)
+      await submitMissionInterviewResponse(sessionId, { [getMissionInterviewSession(sessionId)!.currentQuestions[0].id]: "answer" }, "/tmp/project", MOCK_TASK_STORE);
+
+      // Now turnCount=1, maxTurns=2, so the last prompt sent should have the nudge
+      expect(capturedPrompt).toContain("final turn");
+    });
+
+    it("respects custom maxTurns on session creation", async () => {
+      mockCreateFnAgent.mockImplementation(async () => createMockAgent([
+        JSON.stringify({ type: "question", data: { id: "q-max1", type: "text", question: "Q?" } }),
+      ]));
+
+      const sessionId = await createMissionInterviewSession("127.0.0.1", "Max turns test", "/tmp/project", MOCK_TASK_STORE, undefined, undefined, undefined, undefined, 12);
+      await waitForCurrentQuestion(sessionId);
+
+      const session = getMissionInterviewSession(sessionId)!;
+      expect(session.maxTurns).toBe(12);
+    });
+
+    it("defaults maxTurns to 8 when not specified", async () => {
+      mockCreateFnAgent.mockImplementation(async () => createMockAgent([
+        JSON.stringify({ type: "question", data: { id: "q-def", type: "text", question: "Q?" } }),
+      ]));
+
+      const sessionId = await createMissionInterviewSession("127.0.0.1", "Default turns", "/tmp/project", MOCK_TASK_STORE);
+      await waitForCurrentQuestion(sessionId);
+
+      const session = getMissionInterviewSession(sessionId)!;
+      expect(session.maxTurns).toBe(8);
+    });
+  });
+
+  describe("extendMissionInterviewTurns", () => {
+    it("extends maxTurns by default 4 turns", () => {
+      __registerMissionInterviewSessionForTest("extend-session-1");
+      const session = getMissionInterviewSession("extend-session-1")!;
+      expect(session.maxTurns).toBe(8);
+
+      extendMissionInterviewTurns("extend-session-1");
+
+      const updated = getMissionInterviewSession("extend-session-1")!;
+      expect(updated.maxTurns).toBe(12);
+    });
+
+    it("extends maxTurns by custom additionalTurns", () => {
+      __registerMissionInterviewSessionForTest("extend-session-2");
+
+      extendMissionInterviewTurns("extend-session-2", 10);
+
+      const updated = getMissionInterviewSession("extend-session-2")!;
+      expect(updated.maxTurns).toBe(18);
+    });
+
+    it("throws on invalid additionalTurns", () => {
+      __registerMissionInterviewSessionForTest("extend-session-3");
+
+      expect(() => extendMissionInterviewTurns("extend-session-3", 0)).toThrow("positive integer");
+      expect(() => extendMissionInterviewTurns("extend-session-3", -1)).toThrow("positive integer");
+      expect(() => extendMissionInterviewTurns("extend-session-3", 21)).toThrow("positive integer");
+      expect(() => extendMissionInterviewTurns("extend-session-3", 1.5)).toThrow("positive integer");
+    });
+
+    it("throws on non-existent session", () => {
+      expect(() => extendMissionInterviewTurns("non-existent-session")).toThrow(SessionNotFoundError);
+    });
+  });
+
+  describe("batch history persistence", () => {
+    it("stores batch question history correctly in session", () => {
+      __registerMissionInterviewSessionForTest("batch-history-1", "Batch History Mission");
+      const session = getMissionInterviewSession("batch-history-1")!;
+
+      const batchQuestions: import("@fusion/core").PlanningQuestion[] = [
+        { id: "q-b1", type: "text", question: "Scope?", description: "scope" },
+        { id: "q-b2", type: "single_select", question: "Platform?", options: [{ id: "web", label: "Web" }] },
+      ];
+
+      session.history.push({
+        question: batchQuestions,
+        response: { "q-b1": "E-commerce", "q-b2": "web" },
+      });
+
+      expect(Array.isArray(session.history[0].question)).toBe(true);
+      expect((session.history[0].question as import("@fusion/core").PlanningQuestion[]).length).toBe(2);
+    });
+
+    it("round-trips batch questions through rehydration", () => {
+      const store = new MockAiSessionStore();
+      setAiSessionStore(store as any);
+
+      const batchQuestions = [
+        { id: "q-r1", type: "text", question: "Scope?", description: "scope" },
+        { id: "q-r2", type: "confirm", question: "Deploy?", description: "deploy" },
+      ];
+
+      const row = buildMissionRow({
+        id: "rehydrate-batch",
+        status: "awaiting_input",
+        conversationHistory: JSON.stringify([
+          { question: batchQuestions, response: { "q-r1": "App", "q-r2": true } },
+        ]),
+        currentQuestion: JSON.stringify(batchQuestions),
+        inputPayload: JSON.stringify({ ip: "127.0.0.1", missionId: "mission-123", missionTitle: "Batch rehydrate", turnCount: 1, maxTurns: 8 }),
+      });
+      store.rows.set(row.id, row);
+
+      const rehydrated = rehydrateFromStore(store as any);
+      expect(rehydrated).toBe(1);
+
+      const session = getMissionInterviewSession("rehydrate-batch")!;
+      expect(session).toBeDefined();
+      expect(session.turnCount).toBe(1);
+      expect(session.maxTurns).toBe(8);
+      expect(session.currentQuestions.length).toBe(2);
+      expect(session.currentQuestions[0].id).toBe("q-r1");
+      expect(session.currentQuestions[1].id).toBe("q-r2");
+
+      // History should have the batch entry
+      const historyEntry = session.history[0];
+      expect(Array.isArray(historyEntry.question)).toBe(true);
     });
   });
 });

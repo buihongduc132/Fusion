@@ -167,8 +167,8 @@ export const PROMPT_KEY_CATALOG: Record<PromptKey, PromptKeyMetadata> = {
     key: "mission-interview-system",
     name: "Mission Interview System",
     roles: ["triage"],
-    description: "System prompt for AI-assisted mission planning",
-    defaultContent: "You are a mission planning assistant...",
+    description: "System prompt for AI-assisted mission planning with multi-question turns",
+    defaultContent: "You are a mission planning assistant that asks 2–4 questions per turn...",
   },
   "ai-refine-system": {
     key: "ai-refine-system",

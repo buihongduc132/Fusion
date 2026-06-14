@@ -8,6 +8,7 @@ import {
   retryMissionInterviewSession,
   createMissionFromInterview,
   connectMissionInterviewStream,
+  extendMissionInterviewTurns,
   fetchAiSession,
   parseConversationHistory,
   fetchModels,
@@ -91,7 +92,7 @@ interface QuestionResponse {
 type ViewState =
   | { type: "initial" }
   | { type: "loading" }
-  | { type: "question"; sessionId: string; question: PlanningQuestion }
+  | { type: "question"; sessionId: string; questions: PlanningQuestion[]; turnCount?: number; maxTurns?: number }
   | { type: "summary"; sessionId: string; summary: MissionPlanSummary }
   | { type: "error"; sessionId: string; errorMessage: string };
 
@@ -239,7 +240,25 @@ export function MissionInterviewModal({
           setIsReconnecting(false);
           setIsRetrying(false);
           clearMissionGoal(projectId);
-          setView({ type: "question", sessionId, question });
+          setView({ type: "question", sessionId, questions: [question] });
+          setStreamingOutput("");
+          setHasProgress(true);
+
+          broadcastUpdate({
+            sessionId,
+            status: "awaiting_input",
+            needsInput: true,
+            owningTabId: sessionTabId,
+            type: "mission_interview",
+            title: missionGoal.trim() || undefined,
+            projectId: projectId ?? null,
+          });
+        },
+        onQuestions: (questions) => {
+          setIsReconnecting(false);
+          setIsRetrying(false);
+          clearMissionGoal(projectId);
+          setView({ type: "question", sessionId, questions });
           setStreamingOutput("");
           setHasProgress(true);
 
@@ -408,10 +427,11 @@ export function MissionInterviewModal({
       if (session.status === "awaiting_input" && session.currentQuestion) {
         try {
           clearMissionGoal(projectId);
-          const question = JSON.parse(session.currentQuestion) as import("@fusion/core").PlanningQuestion;
+          const parsed = JSON.parse(session.currentQuestion) as import("@fusion/core").PlanningQuestion | import("@fusion/core").PlanningQuestion[];
+          const questions = Array.isArray(parsed) ? parsed : [parsed];
           currentSessionIdRef.current = session.id;
           setHasProgress(true);
-          setView({ type: "question", sessionId: session.id, question });
+          setView({ type: "question", sessionId: session.id, questions });
         } catch {
           setError("Failed to restore session question.");
         }
@@ -569,13 +589,13 @@ export function MissionInterviewModal({
     async (responses: QuestionResponse) => {
       if (view.type !== "question") return;
 
-      const { sessionId } = view;
+      const { sessionId, questions } = view;
       setError(null);
       setResponseHistory((prev) => [...prev, responses]);
       setConversationHistory((prev) => [
         ...prev,
         {
-          question: view.question,
+          question: questions.length === 1 ? questions[0] : questions,
           response: responses,
         },
       ]);
@@ -590,7 +610,7 @@ export function MissionInterviewModal({
         streamConnectionRef.current?.close();
         streamConnectionRef.current = null;
         setError(getErrorMessage(err) || "Failed to submit response");
-        setView({ type: "question", sessionId, question: view.question });
+        setView({ type: "question", sessionId, questions });
       }
     },
     [view, projectId, sessionTabId, connectToMissionInterviewStream]
@@ -648,8 +668,9 @@ export function MissionInterviewModal({
               throw new Error("Interview session is awaiting input but has no current question.");
             }
             clearMissionGoal(projectId);
-            const question = JSON.parse(session.currentQuestion) as PlanningQuestion;
-            setView({ type: "question", sessionId: session.id, question });
+            const parsed = JSON.parse(session.currentQuestion) as PlanningQuestion | PlanningQuestion[];
+            const questions = Array.isArray(parsed) ? parsed : [parsed];
+            setView({ type: "question", sessionId: session.id, questions });
             if (!streamConnectionRef.current?.isConnected()) {
               connectToMissionInterviewStream(session.id);
             }
@@ -958,10 +979,26 @@ export function MissionInterviewModal({
 
           {view.type === "question" && (
             <InterviewQuestionForm
-              question={view.question}
+              questions={view.questions}
+              turnCount={view.turnCount}
+              maxTurns={view.maxTurns}
               progress={getProgress()}
               historyEntries={conversationHistory}
               onSubmit={handleSubmitResponse}
+              onExtendTurns={async () => {
+                try {
+                  await extendMissionInterviewTurns(view.sessionId, projectId, 4);
+                  setView({
+                    type: "question",
+                    sessionId: view.sessionId,
+                    questions: view.questions,
+                    turnCount: view.turnCount,
+                    maxTurns: (view.maxTurns ?? 8) + 4,
+                  });
+                } catch (err) {
+                  setError(getErrorMessage(err) || "Failed to extend turn limit");
+                }
+              }}
             />
           )}
 
@@ -1018,57 +1055,86 @@ export function MissionInterviewModal({
 // ── Question Form (reused from PlanningModeModal pattern) ────────────────
 
 interface InterviewQuestionFormProps {
-  question: PlanningQuestion;
+  questions: PlanningQuestion[];
+  turnCount?: number;
+  maxTurns?: number;
   progress: number;
   historyEntries: ConversationHistoryEntry[];
   onSubmit: (responses: QuestionResponse) => void;
+  onExtendTurns?: () => Promise<void>;
 }
 
-function InterviewQuestionForm({ question, progress, historyEntries, onSubmit }: InterviewQuestionFormProps) {
+function InterviewQuestionForm({ questions, turnCount, maxTurns, progress, historyEntries, onSubmit, onExtendTurns }: InterviewQuestionFormProps) {
   const { t } = useTranslation("app");
-  const [response, setResponse] = useState<QuestionResponse>({});
-  const [textValue, setTextValue] = useState("");
+  const [responses, setResponses] = useState<QuestionResponse>({});
+  const [textValues, setTextValues] = useState<Record<string, string>>({});
   const [commentValue, setCommentValue] = useState("");
+  const [isExtending, setIsExtending] = useState(false);
+
+  // Reset form state when questions change
+  useEffect(() => {
+    setResponses({});
+    setTextValues({});
+    setCommentValue("");
+  }, [questions.map((q) => q.id).join(",")]);
+
+  const setQuestionResponse = useCallback((questionId: string, value: unknown) => {
+    setResponses((prev) => ({ ...prev, [questionId]: value }));
+  }, []);
+
+  const setTextValue = useCallback((questionId: string, value: string) => {
+    setTextValues((prev) => ({ ...prev, [questionId]: value }));
+  }, []);
 
   const handleSubmit = useCallback(() => {
-    let nextResponse: QuestionResponse;
+    const nextResponse: QuestionResponse = {};
 
-    if (question.type === "text") {
-      nextResponse = { [question.id]: textValue };
-    } else if (question.type === "confirm") {
-      nextResponse = { [question.id]: response[question.id] === true };
-    } else {
-      nextResponse = response;
+    for (const q of questions) {
+      if (q.type === "text") {
+        nextResponse[q.id] = textValues[q.id] ?? "";
+      } else if (q.type === "confirm") {
+        nextResponse[q.id] = responses[q.id] === true;
+      } else {
+        nextResponse[q.id] = responses[q.id];
+      }
     }
 
     const trimmedComment = commentValue.trim();
     if (trimmedComment.length > 0) {
-      nextResponse = { ...nextResponse, _comment: trimmedComment };
+      nextResponse._comment = trimmedComment;
     }
 
     onSubmit(nextResponse);
-  }, [commentValue, question, response, textValue, onSubmit]);
+  }, [commentValue, questions, responses, textValues, onSubmit]);
 
-  useEffect(() => {
-    setResponse({});
-    setTextValue("");
-    setCommentValue("");
-  }, [question.id]);
-
-  const isValid = () => {
-    switch (question.type) {
+  const isQuestionValid = (q: PlanningQuestion): boolean => {
+    switch (q.type) {
       case "text":
-        return textValue.trim().length > 0;
+        return (textValues[q.id] ?? "").trim().length > 0;
       case "single_select":
-        return response[question.id] !== undefined;
+        return responses[q.id] !== undefined;
       case "multi_select":
-        return Array.isArray(response[question.id] as unknown) && (response[question.id] as unknown[]).length > 0;
+        return Array.isArray(responses[q.id] as unknown) && (responses[q.id] as unknown[]).length > 0;
       case "confirm":
-        return response[question.id] !== undefined;
+        return responses[q.id] !== undefined;
       default:
         return true;
     }
   };
+
+  const isValid = questions.every(isQuestionValid);
+  const isSingleQuestion = questions.length === 1;
+  const atTurnLimit = maxTurns !== undefined && turnCount !== undefined && turnCount >= maxTurns;
+
+  const handleExtend = useCallback(async () => {
+    if (!onExtendTurns) return;
+    setIsExtending(true);
+    try {
+      await onExtendTurns();
+    } finally {
+      setIsExtending(false);
+    }
+  }, [onExtendTurns]);
 
   return (
     <div className="planning-question-form">
@@ -1090,118 +1156,137 @@ function InterviewQuestionForm({ question, progress, historyEntries, onSubmit }:
                 />
               ))}
             </div>
-            <span className="planning-progress-text">{t("missions.progressText", "Question {{count}} of ~6", { count: progress })}</span>
+            <span className="planning-progress-text">
+              {t("missions.progressText", "Question {{count}} of ~6", { count: progress })}
+              {maxTurns !== undefined && turnCount !== undefined && (
+                <span className="planning-turn-indicator">
+                  {" "}· {t("missions.turnIndicator", "Turn {{current}} of {{max}}", { current: turnCount + 1, max: maxTurns })}
+                </span>
+              )}
+            </span>
           </div>
 
           <div className="planning-question-content">
-            <h4 className="planning-question-text">{question.question}</h4>
-            {question.description && (
-              <p className="planning-question-desc">{question.description}</p>
-            )}
+            {questions.map((question, qIndex) => (
+              <div key={question.id} className={questions.length > 1 ? "planning-question-item" : ""}>
+                {questions.length > 1 && (
+                  <div className="planning-question-number">
+                    {t("missions.questionNumber", "Question {{num}}", { num: qIndex + 1 })}
+                  </div>
+                )}
 
-            <div className="planning-options">
-              {question.type === "text" && (
-                <textarea
-                  className="planning-textarea"
-                  rows={4}
-                  placeholder={t("missions.typeAnswer", "Type your answer here...")}
-                  value={textValue}
-                  onChange={(e) => setTextValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey && textValue.trim()) {
-                      e.preventDefault();
-                      handleSubmit();
-                    }
-                  }}
-                />
-              )}
+                <h4 className="planning-question-text">{question.question}</h4>
+                {question.description && (
+                  <p className="planning-question-desc">{question.description}</p>
+                )}
 
-              {question.type === "single_select" && question.options && (
-                <div className="planning-radio-group" role="radiogroup">
-                  {question.options.map((option) => (
-                    <label key={option.id} className="planning-option planning-option--radio">
-                      <input
-                        type="radio"
-                        name={question.id}
-                        value={option.id}
-                        checked={response[question.id] === option.id}
-                        onChange={() => setResponse({ [question.id]: option.id })}
-                      />
-                      <div className="planning-option-content">
-                        <span className="planning-option-label">{option.label}</span>
-                        {option.description && (
-                          <span className="planning-option-desc">{option.description}</span>
-                        )}
-                      </div>
-                    </label>
-                  ))}
+                <div className="planning-options">
+                  {question.type === "text" && (
+                    <textarea
+                      className="planning-textarea"
+                      rows={3}
+                      placeholder={t("missions.typeAnswer", "Type your answer here...")}
+                      value={textValues[question.id] ?? ""}
+                      onChange={(e) => setTextValue(question.id, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey && isValid && isSingleQuestion) {
+                          e.preventDefault();
+                          handleSubmit();
+                        }
+                      }}
+                    />
+                  )}
+
+                  {question.type === "single_select" && question.options && (
+                    <div className="planning-radio-group" role="radiogroup">
+                      {question.options.map((option) => (
+                        <label key={option.id} className="planning-option planning-option--radio">
+                          <input
+                            type="radio"
+                            name={question.id}
+                            value={option.id}
+                            checked={responses[question.id] === option.id}
+                            onChange={() => setQuestionResponse(question.id, option.id)}
+                          />
+                          <div className="planning-option-content">
+                            <span className="planning-option-label">{option.label}</span>
+                            {option.description && (
+                              <span className="planning-option-desc">{option.description}</span>
+                            )}
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+
+                  {question.type === "multi_select" && question.options && (
+                    <div className="planning-checkbox-group">
+                      {question.options.map((option) => {
+                        const selected = (responses[question.id] as string[]) || [];
+                        return (
+                          <label key={option.id} className="planning-option planning-option--checkbox">
+                            <input
+                              type="checkbox"
+                              value={option.id}
+                              checked={selected.includes(option.id)}
+                              onChange={(e) => {
+                                const newSelected = e.target.checked
+                                  ? [...selected, option.id]
+                                  : selected.filter((id) => id !== option.id);
+                                setQuestionResponse(question.id, newSelected);
+                              }}
+                            />
+                            <div className="planning-option-content">
+                              <span className="planning-option-label">{option.label}</span>
+                              {option.description && (
+                                <span className="planning-option-desc">{option.description}</span>
+                              )}
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {question.type === "confirm" && (
+                    <div className="planning-confirm-group">
+                      <button
+                        className={`planning-confirm-btn ${responses[question.id] === true ? "selected" : ""}`}
+                        onClick={() => setQuestionResponse(question.id, true)}
+                      >
+                        <CheckCircle size={18} />
+                        {t("actions.yes", "Yes")}
+                      </button>
+                      <button
+                        className={`planning-confirm-btn ${responses[question.id] === false ? "selected" : ""}`}
+                        onClick={() => setQuestionResponse(question.id, false)}
+                      >
+                        <X size={18} />
+                        {t("actions.no", "No")}
+                      </button>
+                    </div>
+                  )}
                 </div>
-              )}
 
-              {question.type === "multi_select" && question.options && (
-                <div className="planning-checkbox-group">
-                  {question.options.map((option) => {
-                    const selected = (response[question.id] as string[]) || [];
-                    return (
-                      <label key={option.id} className="planning-option planning-option--checkbox">
-                        <input
-                          type="checkbox"
-                          value={option.id}
-                          checked={selected.includes(option.id)}
-                          onChange={(e) => {
-                            const newSelected = e.target.checked
-                              ? [...selected, option.id]
-                              : selected.filter((id) => id !== option.id);
-                            setResponse({ [question.id]: newSelected });
-                          }}
-                        />
-                        <div className="planning-option-content">
-                          <span className="planning-option-label">{option.label}</span>
-                          {option.description && (
-                            <span className="planning-option-desc">{option.description}</span>
-                          )}
-                        </div>
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
-
-              {question.type === "confirm" && (
-                <div className="planning-confirm-group">
-                  <button
-                    className={`planning-confirm-btn ${response[question.id] === true ? "selected" : ""}`}
-                    onClick={() => setResponse({ [question.id]: true })}
-                  >
-                    <CheckCircle size={18} />
-                    {t("actions.yes", "Yes")}
-                  </button>
-                  <button
-                    className={`planning-confirm-btn ${response[question.id] === false ? "selected" : ""}`}
-                    onClick={() => setResponse({ [question.id]: false })}
-                  >
-                    <X size={18} />
-                    {t("actions.no", "No")}
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {question.type !== "text" && (
-              <div className="planning-comment-section">
-                <label className="planning-comment-label" htmlFor={`planning-comment-${question.id}`}>
-                  {t("missions.additionalComments", "Additional comments (optional)")}
-                </label>
-                <textarea
-                  id={`planning-comment-${question.id}`}
-                  className="planning-textarea"
-                  rows={2}
-                  placeholder={t("missions.addContext", "Add any extra context or direction...")}
-                  value={commentValue}
-                  onChange={(e) => setCommentValue(e.target.value)}
-                />
+                {questions.length > 1 && qIndex < questions.length - 1 && (
+                  <div className="planning-question-divider" />
+                )}
               </div>
-            )}
+            ))}
+
+            <div className="planning-comment-section">
+              <label className="planning-comment-label" htmlFor="planning-comment-batch">
+                {t("missions.additionalComments", "Additional comments (optional)")}
+              </label>
+              <textarea
+                id="planning-comment-batch"
+                className="planning-textarea"
+                rows={2}
+                placeholder={t("missions.addContext", "Add any extra context or direction...")}
+                value={commentValue}
+                onChange={(e) => setCommentValue(e.target.value)}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -1210,11 +1295,25 @@ function InterviewQuestionForm({ question, progress, historyEntries, onSubmit }:
         <button
           className="btn btn-primary planning-actions-primary"
           onClick={handleSubmit}
-          disabled={!isValid()}
+          disabled={!isValid}
         >
           {t("actions.continue", "Continue")}
           <ArrowRight size={16} className="icon-ml-4" />
         </button>
+        {atTurnLimit && onExtendTurns && (
+          <button
+            className="btn"
+            onClick={() => void handleExtend()}
+            disabled={isExtending}
+          >
+            {isExtending ? (
+              <Loader2 size={14} className="spin icon-mr-4" />
+            ) : (
+              <Plus size={14} className="icon-mr-4" />
+            )}
+            {t("missions.continuePlanning", "Continue Planning (+4 turns)")}
+          </button>
+        )}
       </div>
     </div>
   );

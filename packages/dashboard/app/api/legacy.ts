@@ -8001,6 +8001,7 @@ export interface MissionPlanSummary {
 
 export type MissionInterviewResponse =
   | { type: "question"; data: PlanningQuestion }
+  | { type: "questions"; data: PlanningQuestion[] }
   | { type: "complete"; data: MissionPlanSummary };
 
 /** Start a mission interview session with AI streaming */
@@ -8053,6 +8054,21 @@ export function cancelMissionInterview(sessionId: string, projectId?: string, ta
     method: "POST",
     body: JSON.stringify({ sessionId, tabId }),
   });
+}
+
+/** Extend the turn limit for an in-progress mission interview session */
+export function extendMissionInterviewTurns(
+  sessionId: string,
+  projectId?: string,
+  additionalTurns?: number,
+): Promise<{ success: boolean }> {
+  return api<{ success: boolean }>(
+    withProjectId(`/missions/interview/${encodeURIComponent(sessionId)}/extend`, projectId),
+    {
+      method: "POST",
+      ...(additionalTurns !== undefined ? { body: JSON.stringify({ additionalTurns }) } : {}),
+    },
+  );
 }
 
 export async function fetchMissionInterviewDrafts(projectId?: string): Promise<MissionInterviewDraftSummary[]> {
@@ -8111,6 +8127,7 @@ export function connectMissionInterviewStream(
   handlers: {
     onThinking?: (data: string) => void;
     onQuestion?: (data: PlanningQuestion) => void;
+    onQuestions?: (data: PlanningQuestion[]) => void;
     onSummary?: (data: MissionPlanSummary) => void;
     onError?: (data: string) => void;
     onComplete?: () => void;
@@ -8150,6 +8167,13 @@ export function connectMissionInterviewStream(
             handlers.onQuestion?.(JSON.parse(event.data) as PlanningQuestion);
           } catch (err) {
             console.error("[mission-interview] Failed to parse question event:", err);
+          }
+        },
+        questions: (event) => {
+          try {
+            handlers.onQuestions?.(JSON.parse(event.data) as PlanningQuestion[]);
+          } catch (err) {
+            console.error("[mission-interview] Failed to parse questions event:", err);
           }
         },
         summary: (event) => {
@@ -8626,7 +8650,7 @@ export interface AiSessionSummary {
 }
 
 export interface ConversationHistoryEntry {
-  question?: PlanningQuestion;
+  question?: PlanningQuestion | PlanningQuestion[];
   response?: Record<string, unknown>;
   thinkingOutput?: string;
 }
